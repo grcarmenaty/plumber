@@ -23,7 +23,7 @@ import urllib.request
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -35,6 +35,7 @@ PROJECTS_DIR = CONFIG_PATH.parent / "projects"  # One directory per project, hol
 VAULT_DIR = CONFIG_PATH.parent / "vault"  # catalog/, parameters/, and credentials/
 VAULT_CATEGORIES = ("catalog", "parameters", "credentials")
 HEALTH_TIMEOUT = 3  # Seconds to wait for a station's /health before calling it offline
+STATION_TIMEOUT = 30  # Seconds for a station call that may stop running projects
 
 log = logging.getLogger("plumber")
 
@@ -206,6 +207,63 @@ def _station_status(station: dict[str, str]) -> str:
     except (urllib.error.URLError, TimeoutError, OSError):
         return "offline"
     return "offline"
+
+
+def _call_station(station: dict[str, str], method: str, path: str) -> tuple[int, object]:
+    """
+    Call one path on a station with its bearer token. The JSON body is returned when there is one.
+    """
+
+    request = urllib.request.Request(
+        station["connection"] + path,
+        headers={"Authorization": f"Bearer {station['token']}"},
+        method=method,
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=STATION_TIMEOUT) as response:
+            status, body = response.status, response.read()
+    except urllib.error.HTTPError as e:
+        status, body = e.code, e.read()
+    except (urllib.error.URLError, TimeoutError, OSError):
+        raise HTTPException(502, f"Station '{station['name']}' did not respond")
+    if not body:
+        return status, None
+    try:
+        return status, json.loads(body)
+    except json.JSONDecodeError:
+        return status, None
+
+
+def _delete_station_projects(station: dict[str, str]) -> None:
+    """
+    Delete every project on a station. ValveStation stops that project's runs before removing its files.
+    """
+
+    status, payload = _call_station(station, "GET", "/registry/projects")
+    projects_on_station = payload.get("projects") if isinstance(payload, dict) else None
+    if status != 200 or not isinstance(projects_on_station, list):
+        raise HTTPException(502, f"Station '{station['name']}' did not list its projects")
+    for project in projects_on_station:
+        if not isinstance(project, str) or not project:
+            raise HTTPException(502, f"Station '{station['name']}' did not list its projects")
+        code, _ = _call_station(station, "DELETE", "/project/remove/" + quote(project, safe=""))
+        if code not in (200, 404):
+            raise HTTPException(502, f"Station '{station['name']}' did not remove project '{project}'")
+
+
+def _delete_project_on_stations(names: list[str]) -> None:
+    """
+    Delete these projects on every station. ValveStation stops a project's runs when it is removed.
+    A station that does not have the project is left as it is.
+    """
+
+    with stations_lock:
+        snapshot = [dict(station) for station in stations]
+    for station in snapshot:
+        for project in names:
+            code, _ = _call_station(station, "DELETE", "/project/remove/" + quote(project, safe=""))
+            if code not in (200, 404):
+                raise HTTPException(502, f"Station '{station['name']}' did not remove project '{project}'")
 
 
 def _entry_name(name: object, what: str) -> str:
@@ -616,14 +674,17 @@ async def add_station(request: Request) -> dict:
 @app.delete("/station/remove/{name}")
 def remove_station(name: str) -> dict:
     """
-    Remove a ValveStation by the name Plumber uses for it
+    Remove a ValveStation by the name Plumber uses for it. Projects on that station are deleted
+    first, which stops any runs still going there.
     """
 
-    # TODO: Stop all runs of the project before removing the station (do it by deleting all projects)
-
     with stations_lock:
-        if not any(current["name"] == name for current in stations):
+        station = next((current for current in stations if current["name"] == name), None)
+        if station is None:
             raise HTTPException(404, f"Station '{name}' not found")
+        station = dict(station)
+    _delete_station_projects(station)
+    with stations_lock:
         updated = [current for current in stations if current["name"] != name]
         try:
             _write_stations(updated)
@@ -922,13 +983,15 @@ async def register_variant(request: Request) -> dict:
 @app.delete("/project/remove/{project}")
 def remove_project(project: str) -> dict:
     """
-    Remove a project or variant by name. Removing a base project also removes its variants.
+    Remove a project or variant by name. It is deleted on every station first, which stops any
+    runs still going. Removing a base project also removes its variants.
     """
 
     with projects_lock:
         if not any(current["name"] == project for current in projects):
             raise HTTPException(404, f"Project '{project}' not found")
         doomed = [current["name"] for current in projects if current["name"] == project or current.get("base") == project]
+        _delete_project_on_stations(doomed)
         updated = [current for current in projects if current["name"] not in doomed]
         try:
             _write_projects(updated)
