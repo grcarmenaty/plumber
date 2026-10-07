@@ -1,0 +1,41 @@
+[project]
+name = "plumber"
+version = "0.0.1"
+authors = [
+  { name = "Guillermo Reyes" },
+  { name = "Ricard Lado" },
+]
+description = "A control plane for ValveStation nodes."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+keywords = ["canonada", "valvestation", "plumber"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Operating System :: OS Independent",
+]
+dependencies = [
+  "fastapi==0.121.2",
+  "python-multipart>=0.0.18",
+  "uvicorn==0.35.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "build>=1.2.2",
+  "setuptools>=61.0",
+]
+
+[project.scripts]
+plumber = "plumber.api:api"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+packages = ["plumber"]
+
+[tool.setuptools.package-data]
+"plumber" = ["templates/config.toml"]

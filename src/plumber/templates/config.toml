@@ -1,0 +1,13 @@
+# ValveStation nodes Plumber connects to. name is the id used for that station.
+# connection is the station's base URL. token is the pre-shared bearer token that
+# station expects as "Authorization: Bearer <token>".
+
+[[stations]]
+name = "lab"
+connection = "http://127.0.0.1:508"
+token = ""
+
+[[stations]]
+name = "plant"
+connection = "http://10.0.0.12:508"
+token = ""

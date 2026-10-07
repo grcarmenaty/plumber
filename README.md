@@ -8,35 +8,48 @@ The valve station config will accept connection strings with pre-shared keys wit
 - POST <prefix>/add: Add a new station to the control plane. Accept a body with a connection string that already has a given name that will be used to id the station by Plumber.
 - DELETE <prefix>/remove/{name}: Remove a ValveStation by name.
 
+### Vault
+- GET <prefix>/vault/catalog/list: List all available catalog files in the vault
+- GET <prefix>/vault/catalog/{name}: View a catalog file in the vault
+- PUT <prefix>/vault/catalog/{name}: Upload a catalog file to the vault
+- DELETE <prefix>/vault/catalog/{name}: Delete a catalog file from the vault
+- GET <prefix>/vault/parameters/list: List all available parameters files in the vault
+- GET <prefix>/vault/parameters/{name}: View a parameters file in the vault
+- PUT <prefix>/vault/parameters/{name}: Upload a parameters file to the vault
+- DELETE <prefix>/vault/parameters/{name}: Delete a parameters file from the vault
+- GET <prefix>/vault/credentials/list: List all available credentials files in the vault
+- GET <prefix>/vault/credentials/{name}: View a credentials file in the vault
+- PUT <prefix>/vault/credentials/{name}: Upload a credentials file to the vault
+- DELETE <prefix>/vault/credentials/{name}: Delete a credentials file from the vault
+
 ### Project
-- PUT <prefix>/register: Register a new project, provide a repository and deploy key (if needed)
-- DELETE <prefix>/remove/{project}: Remove a Canonada project from the node. (By project name)
+- GET <prefix>/list: List all registered projects and variants. For a variant it will show the variant name, base project name and the used vault files (if any).
+- PUT <prefix>/register: Register a new project, provide a repository and deploy key (if needed). Optionally allow an upload of a zip file that contains a project.
+- PUT <prefix>/update: Update a registered project by pulling from the repository or by uploading a zip file.
+- PUT <prefix>/register/variant: Register a project variant based on an existing project. Caller needs to provide the variant name and any vault files that need to be overridden (will alter canonada project name). A variant will update its base project files when a registered project is updated. Deleting the base project will delete all variants. (Variant names are treated as project names for the API endpoints; relations are only kept for project management and update purposes.)
+- DELETE <prefix>/remove/{project}: Remove a Canonada project or variant. (By project name)
 
 ### Catalog
-- GET <prefix>/view/catalog: View catalog entries available in each project of each station
-- GET <prefix>/view/parameters: View parameters available in each project of each station
-- PUT <prefix>/inject/parameters: Inject a new parameters file, specify a station and project
-- PUT <prefix>/inject/catalog: Inject a new catalog file, specify a station and project
-- PUT <prefix>/inject/credentials: Inject a new credentials file, specify a station and project
+- GET <prefix>/view/catalog: View catalog entries available in each project and station. Actually asks each station, does not use the vault.
+- GET <prefix>/view/parameters: View parameters available in each project and station. Actually asks each station, does not use the vault.
 
 ### Registry
-- GET <prefix>/pipelines: List available pipelines and their descriptions (per project)
-- GET <prefix>/systems: List available systems and their descriptions (per project)
-- GET <prefix>/projects: Lists the available Canonada projects in this instance
+- GET <prefix>/pipelines: List available pipelines and their descriptions (per project, not variant)
+- GET <prefix>/systems: List available systems and their descriptions (per project, not variant)
 
 ### View
 - GET <prefix>/pipeline/{project}/{pipeline}: View a pipeline's internal makeup (nodes and IO)
 - GET <prefix>/system/{project}/{system}: View a system internal makeup (list of sequential pipeline)
 
 ### Run
-- POST <prefix>/pipeline: Run a pipeline and save its full output into a log file -> API keeps track of the running process state (internal list)
-- POST <prefix>/system: Run a system and save its full output into a log file -> API keeps track of the running process state
+- POST <prefix>/{project}/{pipeline}: Run a pipeline in a target station. If the station does not already have the project registered, it will be registered first.
+- POST <prefix>/{project}/{system}: Run a system in a target station. If the station does not already have the project registered, it will be registered first.
 
 ### Logs
-- GET <prefix>/pipelines: Read/List pipeline execution status (running/errored/finished)
+- GET <prefix>/pipelines: Read/List pipeline execution status for all stations (running/errored/finished)
 - GET <prefix>/systems: Read/List system execution status (running/errored/finished)
-- GET <prefix>/pipeline/{project}/{pipeline}: Read pipeline logs. Read from the log file for the requested process
-- GET <prefix>/pipeline/{project}/{system}: Read system logs. Read from the log file for the requested process
+- GET <prefix>/pipeline/{project}/{pipeline}: Read pipeline logs for all host stations.
+- GET <prefix>/system/{project}/{system}: Read system logs for all host stations.
 
 ### Misc
 - GET /version
