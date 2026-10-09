@@ -51,8 +51,8 @@ The valve station config will accept connection strings with pre-shared keys wit
 ### Logs
 - GET <prefix>/pipelines: Read/List pipeline execution status for all stations (running/errored/finished)
 - GET <prefix>/systems: Read/List system execution status (running/errored/finished)
-- GET <prefix>/pipeline/{project}/{pipeline}: Read pipeline logs for all host stations.
-- GET <prefix>/system/{project}/{system}: Read system logs for all host stations.
+- GET <prefix>/pipeline/{station}/{project}/{pipeline}/{run}: Read that pipeline run's log on the named station. A missing run is 404.
+- GET <prefix>/system/{station}/{project}/{system}/{run}: Read that system run's log on the named station. A missing run is 404.
 
 ### Misc
 - GET /version

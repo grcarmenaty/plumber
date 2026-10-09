@@ -985,29 +985,28 @@ def _list_runs(kind: str) -> list:
     return _over_stations(one)
 
 
-def _read_logs(kind: str, project: str, name: str) -> list:
+def _read_run_log(kind: str, project: str, name: str, run: int, station_name: str) -> PlainTextResponse:
     """
-    The latest log of a pipeline or system from every station
+    The log of one pipeline or system run on a station
     """
 
+    station = _station_named(station_name)
     route = "pipelines" if kind == "pipeline" else "systems"
-
-    def one(station: dict[str, str]) -> dict:
-        code, body = _call_station(
-            station,
-            "GET",
-            f"/logs/projects/{quote(project, safe='')}/{route}/{quote(name, safe='')}",
-        )
-        if code == 200:
-            return {"station": station["name"], "log": body.decode("utf-8", errors="replace")}
-        detail = body.decode("utf-8", errors="replace")
-        try:
-            parsed = json.loads(detail) if detail else None
-        except json.JSONDecodeError:
-            parsed = None
-        return {"station": station["name"], "error": _error_detail(parsed, f"No log for '{name}'")}
-
-    return _over_stations(one)
+    code, body = _call_station(
+        station,
+        "GET",
+        f"/logs/projects/{quote(project, safe='')}/{route}/{quote(name, safe='')}/{run}",
+    )
+    if code == 200:
+        return PlainTextResponse(body.decode("utf-8", errors="replace"))
+    detail = body.decode("utf-8", errors="replace")
+    try:
+        parsed = json.loads(detail) if detail else None
+    except json.JSONDecodeError:
+        parsed = None
+    if code == 404:
+        raise HTTPException(404, _error_detail(parsed, f"Run {run} not found"))
+    raise HTTPException(502, f"Station '{station['name']}' did not return the log")
 
 
 # Stations ---------------------------------------------------------------------
@@ -1564,22 +1563,26 @@ def list_system_runs() -> list:
     return _list_runs("systems")
 
 
-@app.get("/logs/pipeline/{project}/{pipeline}")
-def read_pipeline_logs(project: str, pipeline: str) -> list:
+@app.get("/logs/pipeline/{station}/{project}/{pipeline}/{run}")
+def read_pipeline_log(station: str, project: str, pipeline: str, run: int) -> PlainTextResponse:
     """
-    The latest pipeline log from every station
-    """
+    The log of one pipeline run on a station
 
-    return _read_logs("pipeline", project, pipeline)
-
-
-@app.get("/logs/system/{project}/{system}")
-def read_system_logs(project: str, system: str) -> list:
-    """
-    The latest system log from every station
+    GET /logs/pipeline/lab/widget/slow/1
     """
 
-    return _read_logs("system", project, system)
+    return _read_run_log("pipeline", project, pipeline, run, station)
+
+
+@app.get("/logs/system/{station}/{project}/{system}/{run}")
+def read_system_log(station: str, project: str, system: str, run: int) -> PlainTextResponse:
+    """
+    The log of one system run on a station
+
+    GET /logs/system/lab/widget/nightly/1
+    """
+
+    return _read_run_log("system", project, system, run, station)
 
 
 # Misc -------------------------------------------------------------------------
