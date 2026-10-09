@@ -950,6 +950,27 @@ def _run(kind: str, project: str, name: str, station_name: str) -> dict:
     return {"station": station["name"], "sent": sent, **payload}
 
 
+def _stop_run(kind: str, project: str, name: str, run: int, station_name: str) -> dict:
+    """
+    Stop one pipeline or system run on a station
+    """
+
+    station = _station_named(station_name)
+    route = "pipeline" if kind == "pipeline" else "system"
+    code, payload = _station_json(
+        station,
+        "DELETE",
+        f"/run/{route}/{quote(project, safe='')}/{quote(name, safe='')}/{run}",
+    )
+    if code == 404:
+        raise HTTPException(404, _error_detail(payload, f"Run {run} not found"))
+    if code == 409:
+        raise HTTPException(409, _error_detail(payload, f"Run {run} is not running"))
+    if code != 200 or not isinstance(payload, dict):
+        raise HTTPException(502, f"Station '{station['name']}' did not stop the run")
+    return {"station": station["name"], **payload}
+
+
 def _list_runs(kind: str) -> list:
     """
     Pipeline or system runs reported by every station
@@ -1500,6 +1521,28 @@ def run_system(project: str, system: str, station: str) -> dict:
     """
 
     return _run("systems", project, system, station)
+
+
+@app.delete("/run/pipeline/{station}/{project}/{pipeline}/{run}")
+def stop_pipeline(station: str, project: str, pipeline: str, run: int) -> dict:
+    """
+    Stop one pipeline run on a station
+
+    DELETE /run/pipeline/lab/widget/slow/1
+    """
+
+    return _stop_run("pipeline", project, pipeline, run, station)
+
+
+@app.delete("/run/system/{station}/{project}/{system}/{run}")
+def stop_system(station: str, project: str, system: str, run: int) -> dict:
+    """
+    Stop one system run on a station
+
+    DELETE /run/system/lab/widget/nightly/1
+    """
+
+    return _stop_run("system", project, system, run, station)
 
 
 # Logs -------------------------------------------------------------------------

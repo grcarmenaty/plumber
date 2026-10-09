@@ -45,6 +45,8 @@ The valve station config will accept connection strings with pre-shared keys wit
 ### Run
 - POST <prefix>/pipeline/{project}/{pipeline}: Run a pipeline on the station named by the station query parameter. If that station does not already have the same project files, the project is sent first.
 - POST <prefix>/system/{project}/{system}: Run a system on the station named by the station query parameter. If that station does not already have the same project files, the project is sent first.
+- DELETE <prefix>/pipeline/{station}/{project}/{pipeline}/{run}: Stop that pipeline run on the named station. A missing run is 404. A run that is not running is 409.
+- DELETE <prefix>/system/{station}/{project}/{system}/{run}: Stop that system run on the named station. A missing run is 404. A run that is not running is 409.
 
 ### Logs
 - GET <prefix>/pipelines: Read/List pipeline execution status for all stations (running/errored/finished)
