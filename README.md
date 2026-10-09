@@ -7,6 +7,7 @@ The valve station config will accept connection strings with pre-shared keys wit
 - GET <prefix>/list: List all configured stations and their status (online/offline)
 - POST <prefix>/add: Add a new station to the control plane. Accept a body with a connection string that already has a given name that will be used to id the station by Plumber.
 - DELETE <prefix>/remove/{name}: Remove a ValveStation by name.
+- PUT <prefix>/update/: Make sure that all online stations' projects are updated to the latest version dictated by the control plane.
 
 ### Vault
 - GET <prefix>/vault/catalog/list: List all available catalog files in the vault
@@ -24,9 +25,9 @@ The valve station config will accept connection strings with pre-shared keys wit
 
 ### Project
 - GET <prefix>/list: List all registered projects and variants. For a variant it will show the variant name, base project name and the used vault files (if any).
-- PUT <prefix>/register: Register a new project, provide a repository and deploy key (if needed). Optionally allow an upload of a zip file that contains a project.
-- PUT <prefix>/update: Update a registered project by pulling from the repository or by uploading a zip file.
-- PUT <prefix>/register/variant: Register a project variant based on an existing project. Caller needs to provide the variant name and any vault files that need to be overridden (will alter canonada project name). A variant will update its base project files when a registered project is updated. Deleting the base project will delete all variants. (Variant names are treated as project names for the API endpoints; relations are only kept for project management and update purposes.)
+- POST <prefix>/register: Register a new project. Provide a repository, the branch to track, and a deploy key (if needed). Optionally allow an upload of a zip file that contains a project.
+- PUT <prefix>/update/{name}: Update the registered project {name} by pulling from its repository or by uploading a zip file. The zip's canonada.toml must use that same name.
+- POST <prefix>/register/variant: Register a project variant based on an existing project. Caller needs to provide the variant name and any vault files that need to be overridden (will alter canonada project name). A variant will update its base project files when a registered project is updated. Deleting the base project will delete all variants. (Variant names are treated as project names for the API endpoints; relations are only kept for project management and update purposes.)
 - DELETE <prefix>/remove/{project}: Remove a Canonada project or variant. (By project name)
 
 ### Catalog
@@ -42,8 +43,8 @@ The valve station config will accept connection strings with pre-shared keys wit
 - GET <prefix>/system/{project}/{system}: View a system internal makeup (list of sequential pipeline)
 
 ### Run
-- POST <prefix>/{project}/{pipeline}: Run a pipeline in a target station. If the station does not already have the project registered, it will be registered first.
-- POST <prefix>/{project}/{system}: Run a system in a target station. If the station does not already have the project registered, it will be registered first.
+- POST <prefix>/pipeline/{project}/{pipeline}: Run a pipeline on the station named by the station query parameter. If that station does not already have the same project files, the project is sent first.
+- POST <prefix>/system/{project}/{system}: Run a system on the station named by the station query parameter. If that station does not already have the same project files, the project is sent first.
 
 ### Logs
 - GET <prefix>/pipelines: Read/List pipeline execution status for all stations (running/errored/finished)
@@ -54,4 +55,3 @@ The valve station config will accept connection strings with pre-shared keys wit
 ### Misc
 - GET /version
 - GET /health
-- GET /logs -> Flow valve internal logs

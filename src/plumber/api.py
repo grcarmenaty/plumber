@@ -9,6 +9,8 @@ Run with:
     plumber
 """
 
+import hashlib
+import io
 import json
 import logging
 import os
@@ -36,6 +38,7 @@ VAULT_DIR = CONFIG_PATH.parent / "vault"  # catalog/, parameters/, and credentia
 VAULT_CATEGORIES = ("catalog", "parameters", "credentials")
 HEALTH_TIMEOUT = 3  # Seconds to wait for a station's /health before calling it offline
 STATION_TIMEOUT = 30  # Seconds for a station call that may stop running projects
+CANONADA_TIMEOUT = 60  # Seconds Canonada may take to load a project
 
 log = logging.getLogger("plumber")
 
@@ -209,23 +212,62 @@ def _station_status(station: dict[str, str]) -> str:
     return "offline"
 
 
-def _call_station(station: dict[str, str], method: str, path: str) -> tuple[int, object]:
+def _stations_snapshot() -> list[dict[str, str]]:
     """
-    Call one path on a station with its bearer token. The JSON body is returned when there is one.
+    A copy of the configured stations
     """
 
-    request = urllib.request.Request(
-        station["connection"] + path,
-        headers={"Authorization": f"Bearer {station['token']}"},
-        method=method,
-    )
+    with stations_lock:
+        return [dict(station) for station in stations]
+
+
+def _station_named(name: str) -> dict[str, str]:
+    """
+    One configured station. Raises 404 when the name is unknown.
+    """
+
+    station = next((item for item in _stations_snapshot() if item["name"] == name), None)
+    if station is None:
+        raise HTTPException(404, f"Station '{name}' not found")
+    return station
+
+
+def _call_station(
+    station: dict[str, str],
+    method: str,
+    path: str,
+    data: bytes | None = None,
+    content_type: str | None = None,
+) -> tuple[int, bytes]:
+    """
+    Call one path on a station with its bearer token and return the status and body
+    """
+
+    headers = {"Authorization": f"Bearer {station['token']}"}
+    if content_type:
+        headers["Content-Type"] = content_type
+    request = urllib.request.Request(station["connection"] + path, data=data, headers=headers, method=method)
     try:
         with urllib.request.urlopen(request, timeout=STATION_TIMEOUT) as response:
-            status, body = response.status, response.read()
+            return response.status, response.read()
     except urllib.error.HTTPError as e:
-        status, body = e.code, e.read()
+        return e.code, e.read()
     except (urllib.error.URLError, TimeoutError, OSError):
         raise HTTPException(502, f"Station '{station['name']}' did not respond")
+
+
+def _station_json(
+    station: dict[str, str],
+    method: str,
+    path: str,
+    data: bytes | None = None,
+    content_type: str | None = None,
+) -> tuple[int, object]:
+    """
+    Call a station and parse a JSON body. An empty or non-JSON body is None.
+    """
+
+    status, body = _call_station(station, method, path, data, content_type)
     if not body:
         return status, None
     try:
@@ -234,12 +276,22 @@ def _call_station(station: dict[str, str], method: str, path: str) -> tuple[int,
         return status, None
 
 
+def _error_detail(payload: object, fallback: str) -> str:
+    """
+    The detail string from a station's error body, or fallback
+    """
+
+    if isinstance(payload, dict) and isinstance(payload.get("detail"), str):
+        return payload["detail"]
+    return fallback
+
+
 def _delete_station_projects(station: dict[str, str]) -> None:
     """
     Delete every project on a station. ValveStation stops that project's runs before removing its files.
     """
 
-    status, payload = _call_station(station, "GET", "/registry/projects")
+    status, payload = _station_json(station, "GET", "/registry/projects")
     projects_on_station = payload.get("projects") if isinstance(payload, dict) else None
     if status != 200 or not isinstance(projects_on_station, list):
         raise HTTPException(502, f"Station '{station['name']}' did not list its projects")
@@ -257,9 +309,7 @@ def _delete_project_on_stations(names: list[str]) -> None:
     A station that does not have the project is left as it is.
     """
 
-    with stations_lock:
-        snapshot = [dict(station) for station in stations]
-    for station in snapshot:
+    for station in _stations_snapshot():
         for project in names:
             code, _ = _call_station(station, "DELETE", "/project/remove/" + quote(project, safe=""))
             if code not in (200, 404):
@@ -619,9 +669,329 @@ def _variants_of(base: str) -> list[dict[str, str]]:
     return [project for project in projects if project.get("base") == base]
 
 
+def _project_files(directory: Path) -> list[tuple[str, Path]]:
+    """
+    Project files in path order, named with '/'. Directories named .git or __pycache__ are skipped.
+    """
+
+    found = []
+    for path in directory.rglob("*"):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(directory)
+        if ".git" in relative.parts or "__pycache__" in relative.parts:
+            continue
+        found.append((relative.as_posix(), path))
+    found.sort()
+    return found
+
+
+def _project_fingerprint(directory: Path) -> tuple[str, str]:
+    """
+    The version from canonada.toml and a sha256 of the project files. Paths are relative,
+    sorted, and use '/'. Directories named .git or __pycache__ are skipped.
+    """
+
+    with (directory / "canonada.toml").open("rb") as handle:
+        data = tomllib.load(handle)
+    project = data.get("project") if isinstance(data, dict) else None
+    version = project.get("version") if isinstance(project, dict) else None
+    if not isinstance(version, str):
+        version = ""
+    digest = hashlib.sha256()
+    for relative, path in _project_files(directory):
+        payload = path.read_bytes()
+        digest.update(relative.encode())
+        digest.update(b"\0")
+        digest.update(str(len(payload)).encode())
+        digest.update(b"\0")
+        digest.update(payload)
+    return version, digest.hexdigest()
+
+
+def _zip_project(directory: Path) -> bytes:
+    """
+    A zip of the project with canonada.toml at its root, using the same files as the fingerprint
+    """
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        for relative, path in _project_files(directory):
+            archive.writestr(relative, path.read_bytes())
+    return buffer.getvalue()
+
+
+def _send_project(station: dict[str, str], directory: Path) -> None:
+    """
+    Upload a project zip to a station. The field name is the one ValveStation expects.
+    """
+
+    boundary = "plumberboundary"
+    body = b"".join([
+        f"--{boundary}\r\n".encode(),
+        b'Content-Disposition: form-data; name="file"; filename="project.zip"\r\n',
+        b"Content-Type: application/zip\r\n\r\n",
+        _zip_project(directory),
+        f"\r\n--{boundary}--\r\n".encode(),
+    ])
+    code, _ = _station_json(
+        station,
+        "PUT",
+        "/project/add",
+        body,
+        f"multipart/form-data; boundary={boundary}",
+    )
+    if code != 200:
+        raise HTTPException(502, f"Station '{station['name']}' did not accept the project")
+
+
+def _ensure_project(station: dict[str, str], project: str, directory: Path) -> bool:
+    """
+    Send the project when the station does not have this exact file set. Returns whether it was sent.
+    """
+
+    _, digest = _project_fingerprint(directory)
+    code, payload = _station_json(station, "GET", "/project/version/" + quote(project, safe=""))
+    if code == 200 and isinstance(payload, dict) and payload.get("sha256") == digest:
+        return False
+    if code not in (200, 404):
+        raise HTTPException(502, f"Station '{station['name']}' did not report the project version")
+    _send_project(station, directory)
+    return True
+
+
+def _over_stations(fetch) -> list[dict]:
+    """
+    Ask every station. One station that does not respond becomes an error entry, not a failed request.
+    """
+
+    snapshot = _stations_snapshot()
+    if not snapshot:
+        return []
+
+    def guarded(station: dict[str, str]) -> dict:
+        try:
+            return fetch(station)
+        except HTTPException as e:
+            detail = e.detail if isinstance(e.detail, str) else f"Station '{station['name']}' did not respond"
+            return {"station": station["name"], "error": detail}
+
+    with ThreadPoolExecutor(max_workers=min(32, len(snapshot))) as pool:
+        return list(pool.map(guarded, snapshot))
+
+
+def _projects_on(station: dict[str, str]) -> list[str]:
+    """
+    Project names reported by a station
+    """
+
+    code, payload = _station_json(station, "GET", "/registry/projects")
+    names = payload.get("projects") if isinstance(payload, dict) else None
+    if code != 200 or not isinstance(names, list) or not all(isinstance(name, str) for name in names):
+        raise HTTPException(502, f"Station '{station['name']}' did not list its projects")
+    return names
+
+
+def _view_configs(kind: str) -> list:
+    """
+    Catalog or parameters for every project on every station. kind is 'catalog' or 'parameters'.
+    """
+
+    def one(station: dict[str, str]) -> dict:
+        entries = []
+        for project in _projects_on(station):
+            code, payload = _station_json(station, "GET", f"/catalog/projects/{quote(project, safe='')}/{kind}")
+            if code == 200:
+                entries.append({"project": project, kind: payload})
+            elif code == 404:
+                entries.append({"project": project, kind: None})
+            else:
+                entries.append({"project": project, "error": _error_detail(payload, f"did not return {kind}")})
+        return {"station": station["name"], "projects": entries}
+
+    return _over_stations(one)
+
+
+def _canonada_registry(project: str, kind: str) -> list | dict:
+    """
+    Pipelines or systems of one local project, read by Canonada. kind is 'pipelines' or 'systems'.
+    A load failure is {"error": "..."}.
+    """
+
+    # Canonada is imported before the project is on the path, so the project can't shadow it.
+    if kind == "pipelines":
+        script = """\
+import json
+import os
+import sys
+
+from canonada.pipeline import Pipeline
+
+sys.path.append(os.getcwd())
+from pipelines import *
+from systems import *
+
+entries = [
+    {
+        "name": p.name,
+        "description": p.description,
+        "nodes": [node.name for node in p.nodes],
+        "max_workers": p.max_workers,
+        "multiprocessing": p.multiprocessing,
+        "error_tolerant": p.error_tolerant,
+    }
+    for p in Pipeline.registry
+]
+sys.stdout.write("\\n")
+json.dump(entries, sys.stdout)
+sys.stdout.write("\\n")
+"""
+    else:
+        script = """\
+import json
+import os
+import sys
+
+from canonada.system import System
+
+sys.path.append(os.getcwd())
+from pipelines import *
+from systems import *
+
+entries = [
+    {
+        "name": s.name,
+        "description": s.description,
+        "pipelines": [p.name for p in s.pipeline],
+    }
+    for s in System.registry
+]
+sys.stdout.write("\\n")
+json.dump(entries, sys.stdout)
+sys.stdout.write("\\n")
+"""
+
+    directory = PROJECTS_DIR / project
+    if not directory.is_dir():
+        return {"error": f"Project '{project}' not found"}
+    try:
+        result = subprocess.run(
+            [sys.executable, "-P", "-c", script],
+            cwd=directory,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=CANONADA_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        return {"error": f"Canonada timed out loading project '{project}'"}
+
+    if result.returncode != 0:
+        detail = result.stderr.strip().splitlines()
+        reason = f": {detail[-1]}" if detail else ""
+        return {"error": f"Canonada can't load project '{project}'{reason}"}
+    try:
+        entries = json.loads(result.stdout.rsplit("\n", 2)[-2])
+    except (json.JSONDecodeError, IndexError):
+        return {"error": f"Canonada returned no JSON for project '{project}'"}
+    if not isinstance(entries, list) or not all(isinstance(item, dict) for item in entries):
+        return {"error": f"Canonada returned no JSON for project '{project}'"}
+    return entries
+
+
+def _view_makeups(kind: str, project: str, name: str) -> list:
+    """
+    A pipeline or system view from every station that has the project
+    """
+
+    route = "pipelines" if kind == "pipeline" else "systems"
+
+    def one(station: dict[str, str]) -> dict:
+        if project not in _projects_on(station):
+            return {"station": station["name"], "error": f"Project '{project}' not found"}
+        code, payload = _station_json(
+            station,
+            "GET",
+            f"/view/projects/{quote(project, safe='')}/{route}/{quote(name, safe='')}",
+        )
+        if code == 200 and isinstance(payload, dict):
+            return {"station": station["name"], "view": payload}
+        return {"station": station["name"], "error": _error_detail(payload, f"'{name}' not found")}
+
+    return _over_stations(one)
+
+
+def _run(kind: str, project: str, name: str, station_name: str) -> dict:
+    """
+    Run a pipeline or system on one station, sending the project first when its files differ
+    """
+
+    station = _station_named(station_name)
+    directory = PROJECTS_DIR / project
+    with projects_lock:
+        known = any(item["name"] == project for item in projects)
+    if not known or not directory.is_dir():
+        raise HTTPException(404, f"Project '{project}' not found")
+    try:
+        sent = _ensure_project(station, project, directory)
+    except (OSError, tomllib.TOMLDecodeError) as e:
+        raise HTTPException(400, f"Could not read project '{project}': {e}")
+    route = "pipelines" if kind == "pipelines" else "systems"
+    code, payload = _station_json(
+        station,
+        "POST",
+        f"/run/projects/{quote(project, safe='')}/{route}/{quote(name, safe='')}",
+        b"",
+    )
+    if code == 404:
+        raise HTTPException(404, _error_detail(payload, f"'{name}' not found"))
+    if code != 200 or not isinstance(payload, dict):
+        raise HTTPException(502, f"Station '{station['name']}' did not start the run")
+    return {"station": station["name"], "sent": sent, **payload}
+
+
+def _list_runs(kind: str) -> list:
+    """
+    Pipeline or system runs reported by every station
+    """
+
+    def one(station: dict[str, str]) -> dict:
+        code, payload = _station_json(station, "GET", f"/logs/{kind}")
+        if code != 200 or not isinstance(payload, list):
+            raise HTTPException(502, f"Station '{station['name']}' did not list its runs")
+        return {"station": station["name"], "runs": payload}
+
+    return _over_stations(one)
+
+
+def _read_logs(kind: str, project: str, name: str) -> list:
+    """
+    The latest log of a pipeline or system from every station
+    """
+
+    route = "pipelines" if kind == "pipeline" else "systems"
+
+    def one(station: dict[str, str]) -> dict:
+        code, body = _call_station(
+            station,
+            "GET",
+            f"/logs/projects/{quote(project, safe='')}/{route}/{quote(name, safe='')}",
+        )
+        if code == 200:
+            return {"station": station["name"], "log": body.decode("utf-8", errors="replace")}
+        detail = body.decode("utf-8", errors="replace")
+        try:
+            parsed = json.loads(detail) if detail else None
+        except json.JSONDecodeError:
+            parsed = None
+        return {"station": station["name"], "error": _error_detail(parsed, f"No log for '{name}'")}
+
+    return _over_stations(one)
+
+
 # Stations ---------------------------------------------------------------------
 @app.get("/station/list")
-def list_stations() -> dict:
+def list_stations() -> list:
     """
     Configured stations and whether each is online or offline. Tokens are not included.
     """
@@ -629,16 +999,14 @@ def list_stations() -> dict:
     with stations_lock:
         snapshot = list(stations)
     if not snapshot:
-        return {"stations": []}
+        return []
     workers = min(32, len(snapshot))
     with ThreadPoolExecutor(max_workers=workers) as pool:
         statuses = list(pool.map(_station_status, snapshot))
-    return {
-        "stations": [
-            {"name": station["name"], "connection": station["connection"], "status": status}
-            for station, status in zip(snapshot, statuses)
-        ]
-    }
+    return [
+        {"name": station["name"], "connection": station["connection"], "status": status}
+        for station, status in zip(snapshot, statuses)
+    ]
 
 
 @app.post("/station/add")
@@ -694,9 +1062,48 @@ def remove_station(name: str) -> dict:
     return {"name": name, "removed": True}
 
 
+@app.put("/station/update")
+def update_stations() -> list:
+    """
+    Send each registered project to every online station whose files do not match.
+    A matching checksum is left as it is. Offline stations are skipped.
+
+    PUT /station/update
+    """
+
+    snapshot = _stations_snapshot()
+    with projects_lock:
+        names = [project["name"] for project in projects]
+    if not snapshot:
+        return []
+
+    def one(station: dict[str, str]) -> dict:
+        if _station_status(station) != "online":
+            return {"station": station["name"], "status": "offline"}
+        entries = []
+        for name in names:
+            directory = PROJECTS_DIR / name
+            if not directory.is_dir():
+                entries.append({"project": name, "error": f"Project '{name}' not found"})
+                continue
+            try:
+                sent = _ensure_project(station, name, directory)
+            except HTTPException as e:
+                detail = e.detail if isinstance(e.detail, str) else f"Station '{station['name']}' did not respond"
+                entries.append({"project": name, "error": detail})
+            except (OSError, tomllib.TOMLDecodeError) as e:
+                entries.append({"project": name, "error": f"Could not read project '{name}': {e}"})
+            else:
+                entries.append({"project": name, "sent": sent})
+        return {"station": station["name"], "status": "online", "projects": entries}
+
+    with ThreadPoolExecutor(max_workers=min(32, len(snapshot))) as pool:
+        return list(pool.map(one, snapshot))
+
+
 # Vault ------------------------------------------------------------------------
 @app.get("/vault/{category}/list")
-def list_vault(category: str) -> dict:
+def list_vault(category: str) -> list:
     """
     Names of the files stored in one vault category
     """
@@ -705,7 +1112,7 @@ def list_vault(category: str) -> dict:
         raise HTTPException(404, f"Vault category '{category}' not found")
     directory = VAULT_DIR / category
     files = sorted(path.stem for path in directory.glob("*.toml") if path.is_file() and not path.stem.startswith("."))
-    return {"files": files}
+    return files
 
 
 @app.get("/vault/{category}/{name}")
@@ -766,16 +1173,16 @@ def delete_vault(category: str, name: str) -> dict:
 
 # Project ----------------------------------------------------------------------
 @app.get("/project/list")
-def list_projects() -> dict:
+def list_projects() -> list:
     """
     Registered projects and variants. A variant includes its base project and the vault files it uses.
     """
 
     with projects_lock:
-        return {"projects": [_public_project(project) for project in projects]}
+        return [_public_project(project) for project in projects]
 
 
-@app.put("/project/register")
+@app.post("/project/register")
 def register_project(
     repository: str = Form(""),
     branch: str = Form(""),
@@ -921,7 +1328,7 @@ def update_project(name: str, file: UploadFile | None = File(None)) -> dict:
     return {"name": checked, "updated": True}
 
 
-@app.put("/project/register/variant")
+@app.post("/project/register/variant")
 async def register_variant(request: Request) -> dict:
     """
     Register a variant of an existing project. The variant gets its own name, a copy of the base
@@ -1001,6 +1408,160 @@ def remove_project(project: str) -> dict:
         for doomed_name in doomed:
             shutil.rmtree(PROJECTS_DIR / doomed_name, ignore_errors=True)
     return {"project": project, "removed": True}
+
+
+# Catalog ----------------------------------------------------------------------
+@app.get("/catalog/view/catalog")
+def view_catalogs() -> list:
+    """
+    Catalog entries of each project on each station
+    """
+
+    return _view_configs("catalog")
+
+
+@app.get("/catalog/view/parameters")
+def view_parameters() -> list:
+    """
+    Parameters of each project on each station
+    """
+
+    return _view_configs("parameters")
+
+
+# Registry ---------------------------------------------------------------------
+@app.get("/registry/pipelines")
+def list_pipelines() -> dict:
+    """
+    Pipelines of each registered base project, read with Canonada and keyed by project name.
+    Variants are not listed.
+
+    {"widget": [{"name": "slow", "description": "", "nodes": ["read"]}]}
+    """
+
+    with projects_lock:
+        names = [project["name"] for project in projects if "base" not in project]
+    return {name: _canonada_registry(name, "pipelines") for name in names}
+
+
+@app.get("/registry/systems")
+def list_systems() -> dict:
+    """
+    Systems of each registered base project, read with Canonada and keyed by project name.
+    Variants are not listed.
+
+    {"widget": [{"name": "nightly", "description": "", "pipelines": ["slow"]}]}
+    """
+
+    with projects_lock:
+        names = [project["name"] for project in projects if "base" not in project]
+    return {name: _canonada_registry(name, "systems") for name in names}
+
+
+# View -------------------------------------------------------------------------
+@app.get("/view/pipeline/{project}/{pipeline}")
+def view_pipeline(project: str, pipeline: str) -> list:
+    """
+    A pipeline's nodes and inputs and outputs, from each station that has the project
+    """
+
+    return _view_makeups("pipeline", project, pipeline)
+
+
+@app.get("/view/system/{project}/{system}")
+def view_system(project: str, system: str) -> list:
+    """
+    A system's pipelines in run order, from each station that has the project
+    """
+
+    return _view_makeups("system", project, system)
+
+
+# Run --------------------------------------------------------------------------
+@app.post("/run/pipeline/{project}/{pipeline}")
+def run_pipeline(project: str, pipeline: str, station: str) -> dict:
+    """
+    Run a pipeline on a station. The project is sent first when the station does not already
+    have the same files. station is the station name.
+
+    POST /run/pipeline/widget/slow?station=lab
+    """
+
+    return _run("pipelines", project, pipeline, station)
+
+
+@app.post("/run/system/{project}/{system}")
+def run_system(project: str, system: str, station: str) -> dict:
+    """
+    Run a system on a station. The project is sent first when the station does not already
+    have the same files. station is the station name.
+
+    POST /run/system/widget/nightly?station=lab
+    """
+
+    return _run("systems", project, system, station)
+
+
+# Logs -------------------------------------------------------------------------
+@app.get("/logs/pipelines")
+def list_pipeline_runs() -> list:
+    """
+    Pipeline runs on every station, and whether each is running, finished, or errored
+    """
+
+    return _list_runs("pipelines")
+
+
+@app.get("/logs/systems")
+def list_system_runs() -> list:
+    """
+    System runs on every station, and whether each is running, finished, or errored
+    """
+
+    return _list_runs("systems")
+
+
+@app.get("/logs/pipeline/{project}/{pipeline}")
+def read_pipeline_logs(project: str, pipeline: str) -> list:
+    """
+    The latest pipeline log from every station
+    """
+
+    return _read_logs("pipeline", project, pipeline)
+
+
+@app.get("/logs/system/{project}/{system}")
+def read_system_logs(project: str, system: str) -> list:
+    """
+    The latest system log from every station
+    """
+
+    return _read_logs("system", project, system)
+
+
+# Misc -------------------------------------------------------------------------
+@app.get("/version")
+def get_version() -> dict:
+    """
+    The version of the server
+    """
+
+    from plumber._version import __version__
+    return {"version": __version__}
+
+
+@app.get("/health")
+def get_health() -> dict:
+    """
+    idle when no station is configured or online, online when one is
+    """
+
+    snapshot = _stations_snapshot()
+    if not snapshot:
+        return {"health": "idle"}
+    with ThreadPoolExecutor(max_workers=min(32, len(snapshot))) as pool:
+        live = any(status == "online" for status in pool.map(_station_status, snapshot))
+    return {"health": "online" if live else "idle"}
 
 
 # API --------------------------------------------------------------------------
