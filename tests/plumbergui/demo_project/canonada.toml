@@ -1,0 +1,9 @@
+[project]
+name = "demo"
+version = "0.1.0"
+authors = []
+description = "Demo project for plumber-gui development (tests/plumbergui/devstack.py)"
+
+[logging]
+level = "INFO"
+show_progress = true

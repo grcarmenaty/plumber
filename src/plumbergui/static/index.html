@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Plumber</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <script src="theme.js"></script>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <header class="app-header">
+    <a class="brand" href="#/runs"><span class="brand-mark" aria-hidden="true"></span>Plumber <span id="version" class="version"></span></a>
+    <nav class="tabs" aria-label="Sections">
+      <a href="#/projects" data-tab="projects">Projects</a>
+      <a href="#/stations" data-tab="stations">Stations</a>
+      <a href="#/pipelines" data-tab="pipelines">Pipelines</a>
+      <a href="#/runs" data-tab="runs">Runs &amp; logs</a>
+    </nav>
+    <a id="status" class="status-pill" href="#/stations">Checking stations…</a>
+  </header>
+  <div id="banner" class="banner" role="alert" hidden></div>
+  <main id="main"></main>
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
