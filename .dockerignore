@@ -1,0 +1,14 @@
+.git
+.venv
+build
+dist
+tests
+**/__pycache__
+**/*.egg-info
+config.toml
+projects.toml
+projects
+vault
+schedules.toml
+runs.jsonl
+plumbergui.log*

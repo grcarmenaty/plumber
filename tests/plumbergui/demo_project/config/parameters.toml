@@ -1,0 +1,5 @@
+[chatty]
+lines = 5
+
+[flood]
+megabytes = 70

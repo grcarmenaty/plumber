@@ -15,6 +15,7 @@ classifiers = [
   "Operating System :: OS Independent",
 ]
 dependencies = [
+  "canonada==0.6.7",
   "fastapi==0.121.2",
   "python-multipart>=0.0.18",
   "uvicorn==0.35.0",
@@ -28,6 +29,7 @@ dev = [
 
 [project.scripts]
 plumber = "plumber.api:api"
+plumber-gui = "plumbergui.main:main"
 
 [build-system]
 requires = ["setuptools>=61.0"]
@@ -35,7 +37,8 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 package-dir = { "" = "src" }
-packages = ["plumber"]
+packages = ["plumber", "plumbergui"]
 
 [tool.setuptools.package-data]
 "plumber" = ["templates/config.toml"]
+"plumbergui" = ["static/*"]

@@ -1,0 +1,5 @@
+# A never-ending stream of counter values, one every `interval` seconds
+[ticks]
+type = "demo.ticker"
+keys = []
+interval = 0.5
