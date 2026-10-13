@@ -15,6 +15,7 @@ classifiers = [
   "Operating System :: OS Independent",
 ]
 dependencies = [
+  "canonada==0.6.7",
   "fastapi==0.121.2",
   "python-multipart>=0.0.18",
   "uvicorn==0.35.0",

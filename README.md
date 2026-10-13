@@ -130,4 +130,4 @@ node --test "tests/plumbergui/*.test.mjs"
 python tests/plumbergui/devstack.py --check
 ```
 
-`devstack.py` needs a Python with Plumber's and ValveStation's requirements and Canonada installed, `git`, and a ValveStation checkout next to this repository (or pass `--valvestation-src`). It runs two ValveStations, Plumber and plumber-gui on high ports with demo projects. Without `--check` it keeps them running until Ctrl+C, so you can try the GUI at `http://127.0.0.1:15100`.
+`devstack.py` needs a Python with Plumber's and ValveStation's requirements installed, `git`, and a ValveStation checkout next to this repository (or pass `--valvestation-src`). It runs two ValveStations, Plumber and plumber-gui on high ports with demo projects. Without `--check` it keeps them running until Ctrl+C, so you can try the GUI at `http://127.0.0.1:15100`.
