@@ -1,4 +1,23 @@
 # Plumber
+## Deploy with Docker
+
+The image runs Plumber and plumber-gui in one container. Only the GUI's port, 510, is exposed: Plumber listens on the container's own loopback, and the image sets `PLUMBERGUI_HOST=0.0.0.0` so the published port reaches the GUI. Build it in this repository, write the sample config into a named volume, edit it, and start the container:
+
+```bash
+docker build -t plumber .
+docker run --rm -v plumber-data:/plumber plumber install
+docker run --rm -it -v plumber-data:/plumber --entrypoint nano plumber config.toml
+docker run -d --name plumber --restart unless-stopped -e TZ=Europe/Madrid \
+  -p 127.0.0.1:510:510 -v plumber-data:/plumber plumber
+```
+
+- **Keep `/plumber` on a named volume,** like `plumber-data` above. It holds Plumber's config, projects and vault, and plumber-gui's schedules, run times and log, so they outlive the container. To update, rebuild the image, run `docker stop plumber && docker rm plumber`, and run the last command again. The image declares `/plumber` a volume, so a container started without `-v` gets an anonymous one, which the next container won't see.
+- **In `config.toml`, set each station's token,** or replace the sample stations with `stations = []` and add stations from the GUI. To edit a file in the volume later, `docker stop plumber`, run the `nano` command, then `docker start plumber`.
+- **Open `http://localhost:510`, or use an SSH tunnel from other machines** (see [Access and security](#access-and-security)). `-p 510:510` publishes the GUI to the whole network instead. It has no login, so anyone who can reach it controls every station. It must be opened by IP address, since plumber-gui refuses host names.
+- **`TZ` sets the time zone schedules fire in.** Without it they use UTC.
+- **`docker logs plumber` shows both Plumber's and plumber-gui's logs.**
+- **Plumber imports each project to list its pipelines,** so any package a project imports beyond Canonada has to be in the image. Add it in an image built `FROM plumber`.
+
 ## API Endpoints
 
 The valve station config will accept connection strings with pre-shared keys with the stations.
