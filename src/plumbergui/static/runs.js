@@ -579,9 +579,18 @@ export function renderRuns(params, ctx) {
     // A run opened from Search logs has the way back to the same results, and the focus, as the Open log
     // that opened it went with the panel
     const back = pane === "run" && searchPanel ? button("← Search results", () => show("find"), "quiet small") : null;
-    viewer = logViewer(pane === "log" ? plumberLog() : runLog(selection), viewParams, (next) => { viewParams = next; save(); }, back);
+    viewer = logViewer(pane === "log" ? plumberLog() : runLog(selection, pickRun), viewParams, (next) => { viewParams = next; save(); }, back);
     logPane.replaceChildren(viewer.node);
     back?.focus();
+  }
+
+  /**
+   * A run picked in the log's head opens as one picked in the list does, but keeps the way back to Search
+   * logs, and the focus goes to the new head's picker: arrow keys on a closed select pick run after run.
+   */
+  function pickRun(run) {
+    show("run", run);
+    logPane.querySelector(".run-pick")?.focus();
   }
 
   /**
@@ -623,15 +632,50 @@ function countLines(text, from, to = text.length) {
   return count;
 }
 
-/** What the viewer shows of one run's log, read from its station through Plumber. */
-function runLog(sel) {
+/**
+ * The run number in a run log's head: a select of every listed run of its pipeline or system on its
+ * station, newest first, so an older run's log is one pick away. pick(run) opens the one chosen.
+ * { node, draw }: draw() follows the run store, and redraws only when the options change, so an open
+ * select is left alone.
+ */
+function runPicker(sel, pick) {
+  const node = h("select", { class: "run-pick", "aria-label": "Run" });
+  node.addEventListener("change", () => pick({ ...sel, run: Number(node.value) }));
+  let shown = "";
+  function draw() {
+    const clock = timesNow();
+    const listed = (runs.data?.runs || []).filter((run) => run.station === sel.station && run.kind === sel.kind
+      && run.project === sel.project && run.name === sel.name);
+    // The run shown is offered even when the station no longer lists it (or the list hasn't come yet)
+    if (!listed.some((run) => run.run === sel.run)) listed.push({ ...sel, status: runs.data ? "not listed" : "" });
+    listed.sort((a, b) => b.run - a.run);
+    // The start only, not listTime(): a running run's would change the options, and close the select, every minute
+    const options = listed.map((run) => {
+      const time = clock?.runs.get(timeKey(run));
+      const start = time?.started ? ` · ${time.started_by ? "before " : ""}${wallTime(time.started, clock.today)}` : "";
+      return [String(run.run), `#${run.run}${run.status ? ` ${run.status}` : ""}${start}`];
+    });
+    const signature = JSON.stringify(options);
+    if (signature === shown) return;
+    shown = signature;
+    node.replaceChildren(...options.map(([value, label]) => h("option", { value }, label)));
+    node.value = String(sel.run);
+  }
+  draw();
+  return { node, draw };
+}
+
+/** What the viewer shows of one run's log, read from its station through Plumber. pick: see runPicker(). */
+function runLog(sel, pick) {
+  const picker = runPicker(sel, pick);
   return {
     run: sel,
     title: [
       h("span", { class: "run-name" }, [sel.project, h("span", { class: "sep" }, " / "), h("strong", null, sel.name)]),
       h("span", { class: "kind-tag" }, sel.kind),
-      h("span", { class: "run-meta" }, `${sel.station} · run #${sel.run}`),
+      h("span", { class: "run-meta" }, [`${sel.station} · run `, picker.node]),
     ],
+    picker,
     read: (options) => api("GET", seg`/logs/${sel.kind}/${sel.station}/${sel.project}/${sel.name}/${sel.run}`, options),
     from: sel.station,
     filename: safeFilename(sel.station, sel.project, `${sel.kind}-${sel.name}`, `run${sel.run}`) + ".log",
@@ -853,6 +897,7 @@ function logViewer(source, initial, onParams, back) {
   }
 
   function drawLive() {
+    source.picker?.draw();
     statusBadge.replaceChildren(state.status === undefined ? badge("unknown", "checking") : state.status ? badge(state.status) : badge("unknown", "not listed"));
     const time = sel ? viewerTime(sel, state.status, timesNow()) : "";
     if (timesLine.textContent !== time) timesLine.textContent = time; // Only when it changes: once a minute while the run goes

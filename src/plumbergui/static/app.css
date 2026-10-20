@@ -257,7 +257,7 @@ textarea.code { font-family: var(--mono); font-size: var(--fs-log); line-height:
 .hint { font-size: var(--fs-sm); color: var(--muted); }
 .stack { display: flex; flex-direction: column; gap: var(--s3); }
 .row { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s2); }
-.row > input { flex: 1 1 160px; }
+.row > input, .row > select { flex: 1 1 160px; }
 .checks { display: flex; flex-wrap: wrap; gap: var(--s2) var(--s4); }
 .check { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
 .presets { display: flex; flex-wrap: wrap; gap: 2px; margin-top: calc(-1 * var(--s2)); }
@@ -453,6 +453,7 @@ body:has(.runs-page) > main { flex: 1; min-height: 0; display: flex; flex-direct
 .viewer { display: flex; flex-direction: column; min-height: 0; height: 100%; }
 .viewer-head { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s2) var(--s3); padding: var(--s2) var(--s3); border-bottom: 1px solid var(--border); }
 .viewer-title { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s2); min-width: 0; flex: 1; }
+.run-pick { min-height: 24px; padding: 0 var(--s1); font-size: var(--fs-sm); }
 .viewer-actions { display: flex; gap: var(--s1); }
 .viewer-tools { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s2) var(--s3); padding: var(--s2) var(--s3); border-bottom: 1px solid var(--border); background: var(--sunken); }
 .counts { display: inline-flex; gap: 4px; font-size: var(--fs-sm); font-weight: 650; }

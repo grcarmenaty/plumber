@@ -1405,22 +1405,63 @@ async function scheduleDialog({ existing, prefill = {} }) {
 
   const name = textInput("name", { value: existing ? existing.name : "", readonly: Boolean(existing), required: true, placeholder: "nightly-lab" });
   const projectSelect = select("project", projectNames, record.project || projectNames[0]);
-  const target = textInput("target", { value: record[kind] || "", required: true, list: "schedule-targets" });
+  // The pipeline or system: picked from what Plumber's registry lists for the project, or typed when the registry can't list it
+  const original = { project: record.project, kind, name: record[kind] || "" };
+  let picked = original.name; // Kept through a change of project or kind while the new list has it
+  let reading = !registry.data; // The registry is being read: the select waits for it
+  const targetSelect = h("select", { name: "target", "aria-label": "Pipeline or system" });
+  const targetText = textInput("target", { value: original.name, list: "schedule-targets" });
+  targetText.setAttribute("aria-label", "Pipeline or system name");
+  let target = targetSelect; // The one on screen
   const targets = h("datalist", { id: "schedule-targets" });
+  const targetNote = h("p", { class: "muted small", hidden: true });
   const stationSelect = select("station", stationNames, record.station || stationNames[0]);
   const cron = textInput("cron", { value: record.cron || "0 2 * * *", required: true });
   const preview = h("p", { class: "muted small", "aria-live": "polite" });
   const enabled = h("input", { type: "checkbox", checked: existing ? existing.enabled : true });
   const consequence = h("p", { class: "muted" });
+  const targetName = () => (target === targetSelect ? targetSelect.value : targetText.value.trim());
 
   const fillTargets = () => {
-    const base = baseOf(projectSelect.value, projects.data);
+    const project = projectSelect.value;
+    const base = baseOf(project, projects.data);
     const listed = registry.data?.[kind + "s"]?.[base];
-    const names = new Set(Array.isArray(listed) ? listed.map((item) => item.name) : []);
-    for (const run of runs.data?.runs || []) if (run.kind === kind && run.project === projectSelect.value) names.add(run.name);
-    targets.replaceChildren(...[...names].sort().map((value) => h("option", { value })));
-    consequence.textContent = `Each fire is skipped while ${target.value || "it"} is running on ${stationSelect.value}. Otherwise plumber-gui asks Plumber to start it, `
-      + `and Plumber sends ${projectSelect.value} first if ${stationSelect.value}'s copy differs (for example after an update), which stops every running run of ${projectSelect.value} there.`;
+    const same = project === original.project && kind === original.kind; // What the dialog opened with
+    let note = "";
+    let next = targetSelect;
+    if (Array.isArray(listed)) {
+      const names = listed.map((item) => item.name).sort();
+      // A schedule's pipeline that its project no longer has is offered all the same: without it, the select would quietly pick another
+      const missing = same && original.name && !names.includes(original.name) ? original.name : "";
+      const options = names.map((value) => ({ value, label: value }));
+      if (missing) options.push({ value: missing, label: `${missing} (${project} no longer has it)` });
+      if (!options.some((option) => option.value === picked)) picked = (same && original.name) || names[0] || "";
+      if (!options.length) options.push({ value: "", label: `${project} has no ${kind}s` });
+      targetSelect.replaceChildren(...options.map((option) => h("option", { value: option.value }, option.label)));
+      targetSelect.value = picked;
+      targetSelect.disabled = !picked;
+    } else if (reading) {
+      picked = same ? original.name : "";
+      targetSelect.replaceChildren(h("option", { value: picked }, picked || "Loading…"));
+      targetSelect.disabled = true;
+      note = "Reading the pipelines and systems from Plumber's registry: it loads each base project with Canonada, up to 60 s each.";
+    } else {
+      // The registry can't list the project: the name is typed, and the station checks it when the schedule fires
+      next = targetText;
+      const failure = listed?.error || (!registry.data && registry.error?.message);
+      note = failure ? `Plumber's registry can't load ${base} (${failure}), so type the name.`
+        : `Plumber's registry doesn't list ${base} yet (Reload on the Browse tab reads it again), so type the name.`;
+      const names = new Set((runs.data?.runs || []).filter((run) => run.kind === kind && run.project === project).map((run) => run.name));
+      targets.replaceChildren(...[...names].sort().map((value) => h("option", { value })));
+    }
+    if (target !== next) {
+      target.replaceWith(next);
+      target = next;
+    }
+    targetNote.textContent = note;
+    targetNote.hidden = !note;
+    consequence.textContent = `Each fire is skipped while ${targetName() || "it"} is running on ${stationSelect.value}. Otherwise plumber-gui asks Plumber to start it, `
+      + `and Plumber sends ${project} first if ${stationSelect.value}'s copy differs (for example after an update), which stops every running run of ${project} there.`;
   };
   let previewTimer = null;
   const updatePreview = () => {
@@ -1446,21 +1487,31 @@ async function scheduleDialog({ existing, prefill = {} }) {
   };
   cron.addEventListener("input", updatePreview);
   for (const control of [projectSelect, stationSelect]) control.addEventListener("change", fillTargets);
-  target.addEventListener("input", fillTargets);
+  targetSelect.addEventListener("change", () => {
+    picked = targetSelect.value;
+    fillTargets();
+  });
+  targetText.addEventListener("input", fillTargets);
   fillTargets();
   updatePreview();
-  if (!registry.data) registry.ensure().then(fillTargets).catch(() => {});
+  if (reading) {
+    registry.ensure().catch(() => {}).then(() => {
+      reading = false;
+      fillTargets();
+    });
+  }
 
   const presets = h("div", { class: "presets" }, PRESETS.map(([value, label]) => button(label, () => { cron.value = value; updatePreview(); }, "quiet small")));
   const result = await formDialog({
     title: existing ? `Edit schedule ${existing.name}` : "New schedule",
     body: [
       field("Name", name, existing ? "Renaming isn't supported; delete it and create another." : "Letters, digits, dot, dash and underscore."),
+      field("Project", projectSelect), // Before Runs, whose list is the project's
       field("Runs", h("div", { class: "row" }, [
         segmented([{ value: "pipeline", label: "Pipeline" }, { value: "system", label: "System" }], kind, (value) => { kind = value; fillTargets(); }, "Kind"),
         target, targets,
       ])),
-      field("Project", projectSelect),
+      targetNote,
       field("Station", stationSelect),
       field("Cron", cron, "minute hour day-of-month month day-of-week, in plumber-gui's local time. If both day fields are set, either one matching is enough."),
       presets,
@@ -1470,7 +1521,11 @@ async function scheduleDialog({ existing, prefill = {} }) {
     ],
     submitLabel: existing ? "Save" : "Create",
     onSubmit: async () => {
-      const body = { name: name.value.trim(), project: projectSelect.value, [kind]: target.value.trim(), station: stationSelect.value, cron: cron.value.trim(), enabled: enabled.checked };
+      if (!targetName()) {
+        throw new Error(reading ? "Wait for the list of pipelines and systems from Plumber's registry."
+          : target === targetSelect ? `${projectSelect.value} has no ${kind}s to schedule.` : `Type the ${kind}'s name.`);
+      }
+      const body = { name: name.value.trim(), project: projectSelect.value, [kind]: targetName(), station: stationSelect.value, cron: cron.value.trim(), enabled: enabled.checked };
       if (existing) return gui("PUT", seg`/schedule/update/${existing.name}`, { json: body });
       return gui("POST", "/schedule/add", { json: body });
     },
