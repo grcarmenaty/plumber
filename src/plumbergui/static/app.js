@@ -1,5 +1,5 @@
 // plumber-gui: the router, the header, and the Projects, Stations and Pipelines tabs.
-// Runs & logs and the Start and Stop dialogs are in runs.js; the helpers are in ui.js.
+// Runs & logs and the Start and Stop dialogs are in runs.js, Environments in environments.js; the helpers are in ui.js.
 
 import {
   api, badge, baseOf, busy, button, chip, confirmDialog, emptyState, errorBox, field, fmtClock, fmtServerTime,
@@ -8,6 +8,7 @@ import {
   untilServerTime,
 } from "./ui.js";
 import { describe, groupRuns, renderRuns, runChips, runs, startDialog } from "./runs.js";
+import { renderEnvironments } from "./environments.js";
 
 const main = document.querySelector("#main");
 const CATEGORIES = ["catalog", "parameters", "credentials"];
@@ -17,6 +18,7 @@ const CATEGORIES = ["catalog", "parameters", "credentials"];
 const TABS = {
   projects: { title: "Projects", views: { "": renderProjects, vault: renderVault } },
   stations: { title: "Stations", views: { "": renderStations } },
+  environments: { title: "Environments", views: { "": renderEnvironments } },
   pipelines: { title: "Pipelines", views: { "": renderBrowse, schedules: renderSchedules } },
   runs: { title: "Runs & logs", views: { "": renderRuns } },
 };
@@ -816,7 +818,7 @@ function renderVault(params, ctx) {
   let revealed = false;
   let fileText = null;
   let fileDraws = 0; // Counts drawFile() calls: only the latest one's read may set fileText
-  const categoryBar = h("div", { class: "toolbar" });
+  const categoryBar = h("div", { class: "toolbar vault-categories" }); // On the left, above the file list
   const listPane = h("div", { class: "pane vault-list" }, loading("Loading the vault…"));
   const filePane = h("div", { class: "pane vault-file" });
   const node = h("section", { class: "page" }, [
@@ -848,7 +850,7 @@ function renderVault(params, ctx) {
   }
 
   function draw() {
-    categoryBar.replaceChildren(segmented(CATEGORIES.map((value) => ({ value, label: `${value[0].toUpperCase()}${value.slice(1)} ${lists[value].length}` })), category, (value) => {
+    categoryBar.replaceChildren(segmented(CATEGORIES.map((value) => ({ value, label: `${value[0].toUpperCase()}${value.slice(1)}` })), category, (value) => {
       category = value;
       selected = "";
       save();

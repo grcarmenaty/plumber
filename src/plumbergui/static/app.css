@@ -412,6 +412,7 @@ dialog::backdrop { background: rgb(14 13 12 / 45%); }
 .split { display: grid; grid-template-columns: minmax(22rem, 34%) 1fr; gap: var(--s3); min-height: 0; }
 .split.browse { grid-template-columns: minmax(14rem, 22%) 1fr; }
 .split.vault { grid-template-columns: minmax(16rem, 30%) 1fr; }
+.toolbar.vault-categories { margin-left: 0; }
 .split.wide { grid-template-columns: 1fr; }
 .split.wide > .run-list { display: none; }
 .pane { min-width: 0; min-height: 0; }
@@ -447,6 +448,18 @@ body:has(.runs-page) > main { flex: 1; min-height: 0; display: flex; flex-direct
 .log-entry:focus-visible { outline-offset: -2px; } /* The pane would clip it */
 .station-error { padding: var(--s2) var(--s3); margin: 0; font-size: var(--fs-sm); color: var(--err); }
 .panel-body .station-error { padding: var(--s2) 0 0; } /* Under "What each station has", in line with its table */
+
+/* Environments */
+.env-matrix th .check { font-weight: 600; }
+.env-cell { display: inline-flex; padding: 0; border: 0; background: none; font: inherit; color: inherit; cursor: pointer; border-radius: 999px; }
+.env-actions { margin-top: var(--s3); }
+.env-command-form { display: flex; flex-direction: column; gap: var(--s2); }
+.env-command-form .row > .field-label { flex: none; }
+.env-result:empty { display: none; }
+.env-result { display: flex; flex-direction: column; gap: var(--s2); }
+.env-result-head { display: flex; align-items: center; gap: var(--s2); }
+.env-command summary { cursor: pointer; color: var(--muted); font-size: var(--fs-sm); }
+.env-output { padding: var(--s3); background: var(--sunken); border: 1px solid var(--border); border-radius: var(--radius); font-size: var(--fs-log); line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; overflow: auto; max-height: 60vh; }
 
 .log-pane { display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
 .runs-page .log-pane { overflow: hidden; scroll-margin-top: calc(var(--header-h) + var(--s2)); } /* Scrolled to on narrow screens */

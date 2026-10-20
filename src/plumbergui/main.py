@@ -40,6 +40,7 @@ FILES = {
     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
     "/ui.js": ("ui.js", "text/javascript; charset=utf-8"),
     "/runs.js": ("runs.js", "text/javascript; charset=utf-8"),
+    "/environments.js": ("environments.js", "text/javascript; charset=utf-8"),
     "/search.js": ("search.js", "text/javascript; charset=utf-8"),
     "/theme.js": ("theme.js", "text/javascript; charset=utf-8"),
     "/logparse.js": ("logparse.js", "text/javascript; charset=utf-8"),

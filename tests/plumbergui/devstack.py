@@ -7,13 +7,15 @@ Run it with a Python that has Plumber's and ValveStation's requirements and Cano
 
 Everything lives in a new temporary directory that is removed on exit (--keep leaves it), after the
 runs still going are stopped. Tokens are random and only written to that directory's config files. The demo data:
-    demo       the zip of tests/plumbergui/demo_project
+    demo       the zip of tests/plumbergui/demo_project. Its requirements.txt lists only canonada, which is
+               installed already, so the environment checks install nothing
     demo-git   the same project, renamed and registered from a local git repository (branch main)
     demo-fast  a variant of demo that uses the vault files catalog "fast", parameters "short" and
                credentials "dummy"
 """
 
 import argparse
+import importlib.util
 import io
 import json
 import os
@@ -24,6 +26,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -125,7 +128,8 @@ def _start(name: str, module: str, cwd: Path, env: dict, logs: Path) -> subproce
     return subprocess.Popen(
         [sys.executable, "-m", module],
         cwd=cwd,
-        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1", **env},
+        # No pip version check: the environment checks run pip, and it needn't go online
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "PIP_DISABLE_PIP_VERSION_CHECK": "1", **env},
         stdin=subprocess.DEVNULL,
         stdout=output,
         stderr=subprocess.STDOUT,
@@ -187,6 +191,17 @@ def _kill_leftover_runs(root: Path) -> None:
                 os.killpg(os.getpgid(int(proc_dir.name)), signal.SIGKILL)
         except (OSError, ValueError):
             pass
+
+
+def _cmdline(proc_dir: Path) -> list[bytes]:
+    """
+    A process's arguments, or [] once it is gone
+    """
+
+    try:
+        return (proc_dir / "cmdline").read_bytes().split(b"\0")[:-1]
+    except OSError:
+        return []
 
 
 def _wait_up(name: str, url: str, proc: subprocess.Popen, logs: Path, headers: dict | None = None) -> None:
@@ -363,7 +378,7 @@ def smoke(check: Checks, root: Path) -> None:
     """
 
     for path, kind in (("/", "text/html"), ("/app.js", "javascript"), ("/ui.js", "javascript"), ("/runs.js", "javascript"),
-                       ("/search.js", "javascript"), ("/theme.js", "javascript"), ("/logparse.js", "javascript"), ("/app.css", "text/css"),
+                       ("/environments.js", "javascript"), ("/search.js", "javascript"), ("/theme.js", "javascript"), ("/logparse.js", "javascript"), ("/app.css", "text/css"),
                        ("/favicon.svg", "image/svg+xml")):
         status, body, content_type = call("GET", GUI + path)
         check(status == 200 and kind in content_type and body, f"GET {path} -> {status} {content_type}")
@@ -427,7 +442,68 @@ def smoke(check: Checks, root: Path) -> None:
     status, updated = gui_json("PUT", "/project/update/demo-git")
     check(status == 200 and isinstance(updated, dict) and updated.get("updated"), f"pull demo-git -> {status} {updated}")
 
+    environments(check, root)
     schedules(check, root)
+
+
+def environment(target: str | None, command: str) -> tuple[int, object]:
+    """
+    A command on Plumber's machine (target None) or a station, through plumber-gui as the Environments tab sends it
+    """
+
+    return gui_json("POST", "/environment" + (f"/{target}" if target else ""), json_body={"command": command})
+
+
+def environments(check: Checks, root: Path) -> None:
+    """
+    The Environments tab's commands (environments.js) on Plumber and the stations: each machine's own interpreter,
+    demo's requirements read on Plumber and installed from its file on Plumber and from its lines on a station,
+    exit codes, a station's timeout with nothing left running, and one command at a time
+    """
+
+    for target in (None, *STATIONS):
+        status, result = environment(target, 'python -c "import sys; print(sys.executable)"')
+        check(status == 200 and result == {"exit_code": 0, "timed_out": False, "output": sys.executable + "\n"},
+              f"python on {target or 'Plumber'} is its interpreter -> {status} {result}")
+
+    status, read = environment(None, "if [ -f projects/'demo'/requirements.txt ]; then cat projects/'demo'/requirements.txt; fi")
+    check(status == 200 and read.get("output") == "canonada\n", f"demo's requirements read on Plumber -> {status} {read}")
+    # The servers run with this interpreter. A venv made by uv has no pip: then the install commands can only
+    # show that they ran there, and pip's own part goes unchecked
+    has_pip = importlib.util.find_spec("pip") is not None
+    expected = "Requirement already satisfied: canonada" if has_pip else "No module named pip"
+    note = "" if has_pip else " (this Python has no pip, so only that the command ran is checked)"
+    for target, command in ((None, "cd projects/'demo' && python -m pip install -r requirements.txt"),
+                            ("lab", "python -m pip install -r /dev/stdin <<'PLUMBER_REQUIREMENTS_EOF'\ncanonada\nPLUMBER_REQUIREMENTS_EOF")):
+        status, result = environment(target, command)
+        check(status == 200 and result.get("exit_code") == (0 if has_pip else 1) and expected in result.get("output", ""),
+              f"demo's requirements on {target or 'Plumber'}{note} -> {status} {result}")
+
+    status, result = environment("bench", "echo to stderr >&2; exit 3")
+    check(status == 200 and result == {"exit_code": 3, "timed_out": False, "output": "to stderr\n"}, f"exit 3 on bench -> {status} {result}")
+
+    started = time.monotonic()
+    status, result = environment("lab", "sleep 31 & sleep 30")
+    took = time.monotonic() - started
+    time.sleep(0.5)
+    left = [proc for proc in Path("/proc").glob("[0-9]*") if _cmdline(proc) in ([b"sleep", b"30"], [b"sleep", b"31"])]
+    check(status == 200 and result.get("timed_out") is True and took < 15 and not left,
+          f"sleep 30 on lab stops at its 5 s limit, with nothing left -> {status} {result} in {took:.1f} s, {len(left)} left")
+
+    first: dict = {}
+    thread = threading.Thread(target=lambda: first.update(reply=environment("bench", "sleep 2")))
+    thread.start()
+    time.sleep(0.5)
+    status, busy = environment("bench", "true")
+    thread.join()
+    check(status == 409 and first["reply"][0] == 200, f"a second command on bench at once -> {status} {busy}")
+
+    status, missing = environment("nowhere", "true")
+    check(status == 404, f"a command on an unknown station -> {status} {missing}")
+    text = (root / "logs" / "lab.log").read_text(errors="replace")
+    check("Environment command 'sleep 31 & sleep 30' timed out" in text, "lab logged its commands")
+    status, body, _ = call("GET", GUI + "/gui/log", headers=GUI_HEADERS)
+    check(status == 200 and b"POST /environment/bench -> 409" in body, "plumber-gui logged the commands it passed on")
 
 
 def schedules(check: Checks, root: Path) -> None:
@@ -500,7 +576,7 @@ def main() -> None:
             token = secrets.token_urlsafe(24)
             station = root / name
             (station / "projects").mkdir(parents=True)
-            (station / "config.toml").write_text(f'token = "{token}"\ncanonada_timeout = 60\n')
+            (station / "config.toml").write_text(f'token = "{token}"\ncanonada_timeout = 60\nenvironment_timeout = 5\n')
             plumber_config.append(f'[[stations]]\nname = "{name}"\nconnection = "http://127.0.0.1:{port}"\ntoken = "{token}"\n')
             procs[name] = _start(name, "valvestation", station, {
                 "PYTHONPATH": str(args.valvestation_src), "VALVESTATION_HOST": "127.0.0.1", "VALVESTATION_PORT": str(port),
