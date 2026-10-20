@@ -25,7 +25,7 @@ The valve station config will accept connection strings with pre-shared keys wit
 ### Stations
 - GET <prefix>/list: List all configured stations and their status (online/offline)
 - POST <prefix>/add: Add a new station to the control plane. Accept a body with a connection string that already has a given name that will be used to id the station by Plumber.
-- DELETE <prefix>/remove/{name}: Remove a ValveStation by name.
+- DELETE <prefix>/remove/{name}: Remove a ValveStation by name. Its projects are deleted first, which stops their runs. With `?keep_projects=true` Plumber only forgets the station and never contacts it, so its projects stay there; this also works while it is offline.
 - PUT <prefix>/update/: Make sure that all online stations' projects are updated to the latest version dictated by the control plane.
 
 ### Vault
@@ -130,8 +130,8 @@ plumber-gui's own log goes to the terminal and to `plumbergui.log`, which is rot
 
 - **Plumber keeps station tokens and deploy keys as plain text** in its `config.toml` and `projects.toml`. The GUI sends them once and never shows them again.
 - **Credentials files from the vault travel with the projects that use them.** A start sends the project only to the station that runs it, when that station's copy differs. Push projects is the general update: it sends every project and variant to every online station.
-- **Editing a station removes every project from it,** which stops its runs there; Plumber sends the ones it registered again at the next start or push, and any others are gone for good. Its token has to be entered again, since Plumber never shows it. **Editing a variant stops its runs on every station.** Names can't be changed.
-- **A station that doesn't answer can't be edited or removed from the GUI,** because Plumber first deletes every project on it. Stop Plumber, change or delete the station's `[[stations]]` entry in its `config.toml`, and start Plumber again. Likewise, a variant can only be edited or removed while every station answers.
+- **Editing a station changes only Plumber's record of it,** its connection and token, online or not. Its projects and runs are left alone. A connection pointed at another machine leaves the old one with its copies. The token has to be entered again, since Plumber never shows it. **Editing a variant stops its runs on every station.** Names can't be changed.
+- **Removing a station that answers deletes every project on it** and stops its runs. **A station that doesn't answer can be removed too,** but then Plumber only forgets it: its projects, runs and logs stay on its disk. A variant can only be edited or removed while every station answers.
 
 ### Limitations
 

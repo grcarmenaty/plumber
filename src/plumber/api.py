@@ -1060,10 +1060,13 @@ async def add_station(request: Request) -> dict:
 
 
 @app.delete("/station/remove/{name}")
-def remove_station(name: str) -> dict:
+def remove_station(name: str, keep_projects: bool = False) -> dict:
     """
     Remove a ValveStation by the name Plumber uses for it. Projects on that station are deleted
-    first, which stops any runs still going there.
+    first, which stops any runs still going there. With keep_projects=true the station is not
+    contacted: its projects and runs are left as they are, so an offline station can be removed.
+
+    DELETE /station/remove/lab?keep_projects=true
     """
 
     with stations_lock:
@@ -1071,7 +1074,8 @@ def remove_station(name: str) -> dict:
         if station is None:
             raise HTTPException(404, f"Station '{name}' not found")
         station = dict(station)
-    _delete_station_projects(station)
+    if not keep_projects:
+        _delete_station_projects(station)
     with stations_lock:
         updated = [current for current in stations if current["name"] != name]
         try:

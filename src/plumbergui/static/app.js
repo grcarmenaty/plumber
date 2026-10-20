@@ -213,31 +213,6 @@ function working(message) {
   return () => item.remove();
 }
 
-/** A dialog that only explains, closed with its one button or Escape. */
-function noticeDialog({ title, body }) {
-  return new Promise((resolve) => {
-    const close = h("button", { type: "button", class: "btn primary", onclick: () => finish() }, "Close");
-    const dialog = h("dialog", { class: "dialog" }, h("div", { class: "dialog-form" }, [
-      h("h2", { class: "dialog-title" }, title),
-      h("div", { class: "dialog-body" }, body),
-      h("div", { class: "dialog-actions" }, close),
-    ]));
-    dialog.addEventListener("cancel", (event) => {
-      event.preventDefault();
-      finish();
-    });
-    document.body.append(dialog);
-    dialog.showModal();
-    close.focus();
-
-    function finish() {
-      dialog.close();
-      dialog.remove();
-      resolve();
-    }
-  });
-}
-
 async function registerDialog() {
   let source = "git";
   const repository = textInput("repository", { placeholder: "git@git.example.com:group/project.git" });
@@ -576,58 +551,29 @@ function stationProblem({ connection, token }, listed) {
 }
 
 /**
- * Change a station's connection or token. Plumber can't edit a station, so Save removes it, which deletes
- * every project on it, and adds it again under its name; if adding fails, it adds the old connection back.
+ * Change a station's connection or token, online or not. Plumber can't edit a station, so Save removes it
+ * with keep_projects, which never contacts it and leaves its projects and runs alone, and adds it again
+ * under its name; if adding fails, it adds the old connection back.
  */
 async function editStationDialog(item) {
-  if (item.status !== "online") {
-    // Removing it would fail: Plumber must reach a station to delete its projects
-    await noticeDialog({
-      title: `Edit ${item.name}`,
-      body: h("p", null, `Plumber can only change a station that answers. To fix ${item.name}'s connection or token, stop Plumber, `
-        + `edit ${item.name} in Plumber's config.toml, and start Plumber again.`),
-    });
-    return;
-  }
-  await runs.load().catch(() => {});
   const name = textInput("name", { value: item.name, readonly: true });
   const connection = textInput("connection", { value: item.connection, required: true, placeholder: "http://10.0.0.12:508" });
   const token = textInput("token", { type: "password", required: true, autocomplete: "off" }); // Not "new-password": see addStationDialog
-  const consequence = h("div", { class: "consequence", "aria-live": "polite" });
-  const refresh = () => {
-    const now = running(null, item.name);
-    consequence.replaceChildren(h("p", null, `Saving removes every project from ${item.name}, which stops its running runs; `
-      + "Plumber sends them again at the next start or push. Projects on it that Plumber didn't register are deleted for good."));
-    if (now.length) consequence.append(h("p", { class: "warn-text" }, `Running now: ${runningList(now)}.`));
-    if (runsUnknown(item.name)) consequence.append(h("p", { class: "warn-text" }, `${item.name}'s runs couldn't be read, so the ones this stops may not all be listed.`));
-  };
-  refresh();
-  const unlisten = runs.listen(refresh);
   const result = await formDialog({
     title: `Edit ${item.name}`,
     body: [
       field("Name", name, "Renaming isn't supported; remove it and add another."),
       field("Connection", connection, "The ValveStation's base URL."),
       field("Token", token, "Plumber never shows the token. Enter it again, or a new one."),
-      consequence,
+      h("p", { class: "muted" }, `Saving changes only Plumber's record of ${item.name}: its projects and runs are left alone. `
+        + "Pointed at another machine, the old one keeps its copies, and Plumber sends each project to the new one at its next start there or the next push."),
     ],
     submitLabel: "Save",
-    danger: true,
     onSubmit: async () => {
       const station = { name: item.name, connection: connection.value.trim(), token: token.value };
       const problem = stationProblem(station, item.connection);
       if (problem) throw new Error(problem);
-      try {
-        await api("DELETE", seg`/station/remove/${item.name}`);
-      } catch (error) {
-        // Plumber's own 502: the station didn't answer, or didn't list or delete its projects. plumber-gui's 502 (Plumber is down) keeps its message.
-        if (error.status !== 502 || error.source !== "plumber") throw error;
-        // Plumber lists the station's projects, then deletes them one by one: only a failed list comes before any is deleted
-        if (error.message.endsWith(" did not list its projects")) throw new Error(`${error.message}. Plumber can only change a station that answers; nothing was changed.`);
-        runs.load().catch(() => {});
-        throw new Error(`${error.message}. Plumber can only change a station that answers, so it kept ${item.name}'s connection and token, `
-          + "but it may have deleted some of its projects first, stopping their runs.");
-      }
+      await api("DELETE", seg`/station/remove/${item.name}` + "?keep_projects=true");
       try {
         return await api("POST", "/station/add", { json: station });
       } catch (error) {
@@ -637,17 +583,13 @@ async function editStationDialog(item) {
           const details = again.message === error.message ? error.message : `${error.message}; ${again.message}`;
           return { lost: `${item.name} was removed but could not be added again (${details}). Add it again with Add station: connection ${item.connection}.` };
         }
-        // Back with its old connection and without its projects, so their runs stopped
         stations.load().catch(() => {});
-        runs.load().catch(() => {});
-        throw new Error(`Could not save: ${error.message}. ${item.name} is back with its old connection; its projects were removed and are sent again at the next start or push.`);
+        throw new Error(`Could not save: ${error.message}. ${item.name} is back with its old connection.`);
       }
     },
   });
-  unlisten();
   token.value = "";
   if (!result) return;
-  runs.load().catch(() => {});
   if (result.lost) {
     toast(result.lost, { kind: "error" });
     stations.load().catch(() => {});
@@ -664,31 +606,40 @@ async function editStationDialog(item) {
   } else {
     toast(`Saved ${item.name}. It is online.`, { action: { label: "Push projects…", onClick: pushDialog } });
   }
+  runs.load().catch(() => {}); // Its runs are listed again, or no longer, with the new connection
 }
 
+/**
+ * Remove a station. One that answers has its projects deleted first; one that doesn't is only forgotten
+ * (keep_projects), as Plumber can't reach it, and its projects and runs stay there.
+ */
 async function removeStationDialog(item) {
-  await Promise.all([runs.load(), schedules.load()].map((p) => p.catch(() => {})));
+  await Promise.all([runs.load(), schedules.load(), stations.load()].map((p) => p.catch(() => {})));
+  // Its status now, not the one drawn when the button was: up to a poll old
+  const online = ((stations.data || []).find((station) => station.name === item.name) || item).status === "online";
   const now = running(null, item.name);
   const scheduled = (schedules.data?.schedules || []).filter((schedule) => schedule.station === item.name).map((schedule) => schedule.name);
   const ok = await confirmDialog({
     title: `Remove station ${item.name}?`,
     body: [
-      h("p", null, `Plumber first deletes every project on ${item.name}, including ones it didn't register there, which stops their running runs. `
-        + `Then it removes ${item.name} and its token from its config.toml. Run logs stay on ${item.name}'s disk, but Plumber can't show them any more.`),
-      now.length ? h("p", { class: "warn-text" }, `This stops ${plural(now.length, "running run")}: ${runningList(now)}.`) : null,
-      item.status !== "online" ? h("p", { class: "warn-text" }, `${item.name} is offline, so removal will fail: Plumber must reach it to delete its projects. `
-        + "To drop a station that is gone, stop Plumber, delete its [[stations]] entry from config.toml, and start Plumber again.") : null,
+      online
+        ? h("p", null, `Plumber first deletes every project on ${item.name}, including ones it didn't register there, which stops their running runs. `
+          + `Then it removes ${item.name} and its token from its config.toml. Run logs stay on ${item.name}'s disk, but Plumber can't show them any more.`)
+        : h("p", null, `${item.name} is offline, so Plumber only removes it and its token from its config.toml, without contacting it.`),
+      online && now.length ? h("p", { class: "warn-text" }, `This stops ${plural(now.length, "running run")}: ${runningList(now)}.`) : null,
+      online ? null : h("p", { class: "warn-text" }, `Nothing on ${item.name} is deleted: its projects, run logs and any runs still going stay there, `
+        + `out of Plumber's sight. To delete them, add ${item.name} again once it answers and remove it then, or delete them on the station itself.`),
       scheduled.length ? h("p", { class: "warn-text" }, `Schedules that start runs on ${item.name} will fail: ${scheduled.join(", ")}.`) : null,
     ],
-    confirmLabel: `Delete its projects and remove ${item.name}`,
+    confirmLabel: online ? `Delete its projects and remove ${item.name}` : `Remove ${item.name}`,
     danger: true,
     typeToConfirm: item.name,
   });
   if (!ok) return;
   const done = working(`Removing ${item.name}…`);
   try {
-    await api("DELETE", seg`/station/remove/${item.name}`);
-    toast(`Removed station ${item.name}.`);
+    await api("DELETE", seg`/station/remove/${item.name}` + (online ? "" : "?keep_projects=true"));
+    toast(online ? `Removed station ${item.name}.` : `Removed station ${item.name}. Its projects stay on its disk.`);
   } catch (error) {
     toast(error.message, { kind: "error" });
   } finally {
@@ -1013,14 +964,14 @@ function renderStations(params, ctx) {
   const checked = h("span", { class: "updated muted" });
   const content = h("div", { class: "page-body" }, loading("Checking stations (up to 3 s)…"));
   const pushPanel = h("div");
-  const pending = new Map(); // Edits and removals under way, see waitButton()
+  const pending = new Map(); // Removals under way, see waitButton()
   // Push reads the run list first too (up to 30 s with a slow station); its button is drawn once, so busy() covers it
   const node = h("section", { class: "page" }, [
     pageHead("Stations", null, [checked, button("Push projects…", (event) => busy(event.currentTarget, pushDialog)), button("Add station…", addStationDialog, "primary")]),
     pushPanel,
     content,
     h("p", { class: "muted small" }, "Offline means no answer from the station's /health with its token within 3 s: it is unreachable, or the token is wrong. "
-      + "To fix an offline station's URL or token, edit Plumber's config.toml and restart Plumber."),
+      + "Edit fixes its URL or token without touching its projects."),
     deployedPanel(),
   ]);
   ctx.scope.cleanup(stations.listen(draw));
@@ -1064,7 +1015,7 @@ function renderStations(params, ctx) {
         key: item.name,
         cells: [badge(item.status), h("strong", null, item.name), h("span", { class: "mono" }, item.connection), count("running"), count("errored"),
           h("div", { class: "row-actions" }, [
-            focusKey(waitButton(pending, `edit:${item.name}`, "Edit…", () => editStationDialog(item), "quiet small"), `edit:${item.name}`),
+            focusKey(button("Edit…", () => editStationDialog(item), "quiet small"), `edit:${item.name}`), // Opens at once: nothing to wait for
             focusKey(waitButton(pending, `remove:${item.name}`, "Remove…", () => removeStationDialog(item), "danger quiet small"), `remove:${item.name}`),
           ])],
       };
