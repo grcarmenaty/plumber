@@ -236,16 +236,17 @@ async function registerDialog() {
     ],
     submitLabel: "Register",
     onSubmit: async () => {
-      const data = new FormData();
       if (source === "git") {
         if (!repository.value.trim()) throw new Error("Enter the repository's URL.");
-        data.append("repository", repository.value.trim());
-        data.append("branch", branch.value.trim());
-        if (deployKey.value.trim()) data.append("deploy_key", deployKey.value);
-      } else {
-        if (!file.files.length) throw new Error("Choose a zip file.");
-        data.append("file", file.files[0]);
+        // URL-encoded, not FormData: multipart turns every line break in a text value into CRLF, and ssh
+        // can't read a key with those. A textarea's value has LF line breaks, and this keeps them.
+        const fields = new URLSearchParams({ repository: repository.value.trim(), branch: branch.value.trim() });
+        if (deployKey.value.trim()) fields.append("deploy_key", deployKey.value);
+        return api("POST", "/project/register", { body: fields });
       }
+      if (!file.files.length) throw new Error("Choose a zip file.");
+      const data = new FormData();
+      data.append("file", file.files[0]);
       return api("POST", "/project/register", { body: data });
     },
   });
