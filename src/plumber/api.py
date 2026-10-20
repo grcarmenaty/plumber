@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -25,10 +26,11 @@ import urllib.request
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, urlencode, urlsplit
 
 import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import PlainTextResponse
 
 CONFIG_PATH = Path("config.toml").resolve()
@@ -39,12 +41,16 @@ VAULT_CATEGORIES = ("catalog", "parameters", "credentials")
 HEALTH_TIMEOUT = 3  # Seconds to wait for a station's /health before calling it offline
 STATION_TIMEOUT = 30  # Seconds for a station call that may stop running projects
 CANONADA_TIMEOUT = 60  # Seconds Canonada may take to load a project
+ENVIRONMENT_TIMEOUT = 900  # Seconds an environment command may take on Plumber's machine
+RELAY_TIMEOUT = 1200  # Seconds to wait for a station's environment command, above its default 900
+ENVIRONMENT_OUTPUT = 1024 * 1024  # Bytes of an environment command's output that are returned: its last ones
 
 log = logging.getLogger("plumber")
 
 stations_lock = threading.Lock()  # Serialises changes to the station list and config.toml
 projects_lock = threading.Lock()  # Serialises changes to projects.toml and project directories
 vault_lock = threading.Lock()  # Serialises changes to vault files
+environment_lock = threading.Lock()  # One environment command at a time: two pip installs at once can break an environment
 stations: list[dict[str, str]] = []  # ValveStation nodes from config.toml
 projects: list[dict[str, str]] = []  # Registered projects and variants from projects.toml
 
@@ -238,6 +244,7 @@ def _call_station(
     path: str,
     data: bytes | None = None,
     content_type: str | None = None,
+    timeout: float = STATION_TIMEOUT,
 ) -> tuple[int, bytes]:
     """
     Call one path on a station with its bearer token and return the status and body
@@ -248,7 +255,7 @@ def _call_station(
         headers["Content-Type"] = content_type
     request = urllib.request.Request(station["connection"] + path, data=data, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(request, timeout=STATION_TIMEOUT) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             return response.status, response.read()
     except urllib.error.HTTPError as e:
         return e.code, e.read()
@@ -262,12 +269,13 @@ def _station_json(
     path: str,
     data: bytes | None = None,
     content_type: str | None = None,
+    timeout: float = STATION_TIMEOUT,
 ) -> tuple[int, object]:
     """
     Call a station and parse a JSON body. An empty or non-JSON body is None.
     """
 
-    status, body = _call_station(station, method, path, data, content_type)
+    status, body = _call_station(station, method, path, data, content_type, timeout)
     if not body:
         return status, None
     try:
@@ -1587,6 +1595,138 @@ def read_system_log(station: str, project: str, system: str, run: int) -> PlainT
     """
 
     return _read_run_log("system", project, system, run, station)
+
+
+# Environment ------------------------------------------------------------------
+async def _environment_command(request: Request) -> str:
+    """
+    The command of an environment request: {"command": "..."}. Raises 400 for anything else.
+    """
+
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise HTTPException(400, "Request body must be a JSON object with command")
+    if not isinstance(body, dict):
+        raise HTTPException(400, "Request body must be a JSON object with command")
+    unknown = set(body) - {"command"}
+    if unknown:
+        raise HTTPException(400, f"Unknown field '{sorted(unknown)[0]}'")
+    command = body.get("command")
+    if not isinstance(command, str) or not command.strip() or "\x00" in command:
+        raise HTTPException(400, "command must be a non-empty shell command")
+    return command
+
+
+def _run_command(command: str) -> dict:
+    """
+    Run a shell command in Plumber's working directory and its own Python environment: the
+    directory of the interpreter that runs Plumber, and loads projects, comes first on PATH, so
+    `python -m pip` installs where projects are imported from. One runs at a time. stdout and
+    stderr share a temporary file, not a pipe, so a process the command leaves running can't hold
+    the request open. The command runs in its own session: on a timeout it gets SIGTERM, then
+    SIGKILL after 5 s, and whatever it leaves running is killed when it ends.
+    """
+
+    if not environment_lock.acquire(blocking=False):
+        raise HTTPException(409, "Another environment command is running")
+    try:
+        log.warning(f"Environment command {command!r}")  # In full, at a level the default logging shows
+        path = os.environ.get("PATH")
+        bin_dir = str(Path(sys.executable).parent)
+        env = {**os.environ, "PYTHONUNBUFFERED": "1", "PATH": f"{bin_dir}{os.pathsep}{path}" if path else bin_dir}
+        with tempfile.TemporaryFile() as output:
+            try:
+                proc = subprocess.Popen(
+                    command,
+                    shell=True,
+                    cwd=CONFIG_PATH.parent,
+                    stdin=subprocess.DEVNULL,
+                    stdout=output,
+                    stderr=subprocess.STDOUT,
+                    env=env,
+                    start_new_session=True,
+                )
+            except OSError as e:
+                raise HTTPException(500, f"Could not start the command: {e}")
+            timed_out = False
+            try:
+                proc.wait(timeout=ENVIRONMENT_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                try:
+                    os.killpg(proc.pid, signal.SIGTERM)
+                    proc.wait(timeout=5)
+                except ProcessLookupError:
+                    pass
+                except subprocess.TimeoutExpired:
+                    pass
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)  # After a timeout, and what it started in the background
+            except ProcessLookupError:
+                pass
+            proc.wait()
+            size = output.seek(0, os.SEEK_END)
+            output.seek(max(0, size - ENVIRONMENT_OUTPUT))
+            text = output.read().decode("utf-8", errors="replace")
+        if size > ENVIRONMENT_OUTPUT:
+            text = f"[The first {size - ENVIRONMENT_OUTPUT} bytes of the output are left out]\n{text}"
+        log.warning(f"Environment command {command!r} " + ("timed out" if timed_out else f"exited with {proc.returncode}"))
+        return {"exit_code": proc.returncode, "timed_out": timed_out, "output": text}
+    finally:
+        environment_lock.release()
+
+
+def _relay_command(station: dict[str, str], command: str) -> dict:
+    """
+    Run a shell command on a station (its POST /environment/run) and return its answer
+    """
+
+    log.warning(f"Environment command {command!r} sent to station '{station['name']}'")
+    data = urlencode({"command": command}).encode()
+    status, payload = _station_json(
+        station, "POST", "/environment/run", data, "application/x-www-form-urlencoded", RELAY_TIMEOUT
+    )
+    if status == 200 and isinstance(payload, dict):
+        return payload
+    if status in (400, 409, 422):
+        raise HTTPException(status, _error_detail(payload, f"Station '{station['name']}' refused the command"))
+    if status == 404:
+        raise HTTPException(502, f"Station '{station['name']}' can't run commands: its ValveStation is older than POST /environment/run")
+    raise HTTPException(502, f"Station '{station['name']}' did not run the command")
+
+
+@app.post("/environment")
+async def run_environment_command(request: Request) -> dict:
+    """
+    Run a shell command on Plumber's machine, in its working directory and its own Python
+    environment, and return {"exit_code", "timed_out", "output"} once it ends. A command that fails
+    is still a 200: its exit code says so. Packages installed with `python -m pip` are the ones
+    Plumber sees when it loads projects to list their pipelines. One command runs at a time (409
+    otherwise), for at most ENVIRONMENT_TIMEOUT seconds, and only the last 1 MiB of output is kept.
+
+    {"command": "python -m pip install -r projects/widget/requirements.txt"}
+    """
+
+    command = await _environment_command(request)
+    # In a worker thread: the command can take minutes, and the event loop must keep serving
+    return await run_in_threadpool(_run_command, command)
+
+
+@app.post("/environment/{station}")
+async def run_station_environment_command(station: str, request: Request) -> dict:
+    """
+    Run a shell command on one station (ValveStation's POST /environment/run) and return its
+    {"exit_code", "timed_out", "output"}. The station's 400, 409 and 422 come back as they are.
+    Plumber waits up to RELAY_TIMEOUT seconds; a longer command goes on on the station, and the
+    answer is 502.
+
+    {"command": "python -m pip install pandas==2.2.3"}
+    """
+
+    command = await _environment_command(request)
+    target = _station_named(station)
+    return await run_in_threadpool(_relay_command, target, command)
 
 
 # Misc -------------------------------------------------------------------------

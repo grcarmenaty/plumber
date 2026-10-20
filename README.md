@@ -16,7 +16,6 @@ docker run -d --name plumber --restart unless-stopped -e TZ=Europe/Madrid \
 - **Open `http://localhost:510`, or use an SSH tunnel from other machines** (see [Access and security](#access-and-security)). `-p 510:510` publishes the GUI to the whole network instead. It has no login, so anyone who can reach it controls every station. It must be opened by IP address, since plumber-gui refuses host names.
 - **`TZ` sets the time zone schedules fire in.** Without it they use UTC.
 - **`docker logs plumber` shows both Plumber's and plumber-gui's logs.**
-- **Plumber imports each project to list its pipelines,** so any package a project imports beyond Canonada has to be in the image. Add it in an image built `FROM plumber`.
 
 ## API Endpoints
 
@@ -72,6 +71,10 @@ The valve station config will accept connection strings with pre-shared keys wit
 - GET <prefix>/systems: Read/List system execution status (running/errored/finished)
 - GET <prefix>/pipeline/{station}/{project}/{pipeline}/{run}: Read that pipeline run's log on the named station. A missing run is 404.
 - GET <prefix>/system/{station}/{project}/{system}/{run}: Read that system run's log on the named station. A missing run is 404.
+
+### Environment
+- POST /environment: Run a shell command on Plumber's machine, in its working directory and its own Python environment, and return `{"exit_code", "timed_out", "output"}` once it ends. JSON body `{"command": "..."}`. The interpreter's directory comes first on PATH, so `python -m pip` installs the packages Plumber needs to load projects and list their pipelines. One command runs at a time (409 otherwise), for at most 900 s, and whatever it leaves running is stopped. Only the last 1 MiB of output is returned, and every command is logged.
+- POST /environment/{station}: Run a shell command on that station, through its `POST /environment/run`, and return its answer. Same body. Install a project's packages on a station before the project is sent there: a station refuses a project Canonada can't load. Plumber waits up to 1200 s.
 
 ### Misc
 - GET /version
