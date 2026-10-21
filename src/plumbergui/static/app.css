@@ -450,7 +450,9 @@ body:has(.runs-page) > main { flex: 1; min-height: 0; display: flex; flex-direct
 .panel-body .station-error { padding: var(--s2) 0 0; } /* Under "What each station has", in line with its table */
 
 /* Pipeline graphs (graph.js): boxes measured in .graph-measure, then placed in the SVG */
-.graph { position: relative; overflow: auto; padding: var(--s2); background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); font-size: var(--fs-sm); line-height: 1.35; }
+/* width 0 and min-width 100%: the graph adds nothing to its table cell's width, then fills the cell and scrolls,
+   so a wide pipeline doesn't stretch the table and the page */
+.graph { position: relative; width: 0; min-width: 100%; overflow: auto; padding: var(--s2); background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); font-size: var(--fs-sm); line-height: 1.35; }
 .graph-measure { position: absolute; left: 0; top: 0; visibility: hidden; }
 .graph-svg { display: block; overflow: visible; }
 .graph-edge { fill: none; stroke: var(--muted); stroke-width: 1.3; }
