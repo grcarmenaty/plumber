@@ -844,6 +844,10 @@ entries = [
         "name": p.name,
         "description": p.description,
         "nodes": [node.name for node in p.nodes],
+        "makeup": [
+            {"name": node.name, "description": node.description, "input": node.input, "output": node.output}
+            for node in p.nodes
+        ],
         "max_workers": p.max_workers,
         "multiprocessing": p.multiprocessing,
         "error_tolerant": p.error_tolerant,
@@ -1468,7 +1472,8 @@ def list_pipelines() -> dict:
     Pipelines of each registered base project, read with Canonada and keyed by project name.
     Variants are not listed.
 
-    {"widget": [{"name": "slow", "description": "", "nodes": ["read"]}]}
+    {"widget": [{"name": "slow", "description": "", "nodes": ["read"],
+                 "makeup": [{"name": "read", "description": "", "input": ["raw"], "output": ["table"]}]}]}
     """
 
     with projects_lock:

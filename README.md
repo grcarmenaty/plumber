@@ -53,7 +53,7 @@ The valve station config will accept connection strings with pre-shared keys wit
 - GET <prefix>/view/parameters: View parameters available in each project and station. Actually asks each station, does not use the vault.
 
 ### Registry
-- GET <prefix>/pipelines: List available pipelines and their descriptions (per project, not variant)
+- GET <prefix>/pipelines: List available pipelines and their descriptions (per project, not variant). Each pipeline's `makeup` lists its nodes with their description, inputs and outputs, read by Plumber itself.
 - GET <prefix>/systems: List available systems and their descriptions (per project, not variant)
 
 ### View
@@ -87,7 +87,7 @@ The valve station config will accept connection strings with pre-shared keys wit
 - **Projects:** register projects from git or a zip, pull or upload updates, make and edit variants from vault files, and manage the vault.
 - **Stations:** status, add, edit, remove, push projects, and what each station has deployed.
 - **Environments:** install the projects' `requirements.txt` on Plumber's machine and on the stations, and run any shell command on one of them, in that machine's own Python environment. Plumber needs a project's packages to list its pipelines, and a station refuses a project Canonada can't load, so install them before a project is first sent to a station. A station doesn't have the project files yet: it gets the lines of the file read on Plumber, so lines that point at other files (`-r`, `-e`, `./path`) only work on Plumber. Packages last until the container or machine is rebuilt. Schedules and starts never install anything.
-- **Pipelines:** the pipelines and systems of each project, starting them on stations, and schedules.
+- **Pipelines:** the pipelines and systems of each project, each with a graph of its nodes like Canonada's view (or a table), starting them on stations, and schedules.
 - **Runs & logs:** every run on every station with when it started and how long it took, stop and run again, each run's log with level filters, search and a live tail, a search across the logs of many runs, and plumber-gui's own log.
 
 Start it in the directory that should hold its files, `schedules.toml`, `runs.jsonl` and `plumbergui.log` (the control plane's directory is a good place):

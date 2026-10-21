@@ -378,7 +378,7 @@ def smoke(check: Checks, root: Path) -> None:
     """
 
     for path, kind in (("/", "text/html"), ("/app.js", "javascript"), ("/ui.js", "javascript"), ("/runs.js", "javascript"),
-                       ("/environments.js", "javascript"), ("/search.js", "javascript"), ("/theme.js", "javascript"), ("/logparse.js", "javascript"), ("/app.css", "text/css"),
+                       ("/environments.js", "javascript"), ("/graph.js", "javascript"), ("/search.js", "javascript"), ("/theme.js", "javascript"), ("/logparse.js", "javascript"), ("/app.css", "text/css"),
                        ("/favicon.svg", "image/svg+xml")):
         status, body, content_type = call("GET", GUI + path)
         check(status == 200 and kind in content_type and body, f"GET {path} -> {status} {content_type}")
@@ -400,6 +400,9 @@ def smoke(check: Checks, root: Path) -> None:
     entries = registry.get("demo") if isinstance(registry, dict) else None
     demo = {p["name"] for p in entries} if isinstance(entries, list) else set()
     check(demo == {"chatty", "stream", "boom", "flood"}, f"registry of demo -> {sorted(demo) or entries}")
+    chatty = next((p for p in entries if p["name"] == "chatty"), {}) if isinstance(entries, list) else {}
+    check(chatty.get("makeup") == [{"name": "chat", "description": "", "input": ["params:chatty.lines"], "output": ["_"]}],
+          f"registry has chatty's nodes with their inputs and outputs, for its graph -> {chatty.get('makeup')}")
 
     run = start_run("pipeline", "demo", "chatty", "lab")
     ended = wait_ended("pipeline", "lab", "demo", "chatty", run["run"])

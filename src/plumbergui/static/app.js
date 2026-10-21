@@ -9,6 +9,7 @@ import {
 } from "./ui.js";
 import { describe, groupRuns, renderRuns, runChips, runs, startDialog } from "./runs.js";
 import { renderEnvironments } from "./environments.js";
+import { pipelineGraph } from "./graph.js";
 
 const main = document.querySelector("#main");
 const CATEGORIES = ["catalog", "parameters", "credentials"];
@@ -1129,8 +1130,7 @@ function renderBrowse(params, ctx) {
   let filter = "";
   let waiting = null; // The registry's loading line, made once per load so redraws keep it and its count of seconds
   const open = new Set(); // Expanded rows, "pipeline:name"
-  // Inputs and outputs, "kind:project:name" -> { pending: its loading line } while asked, then { result } or { error }
-  const views = new Map();
+  const tables = new Set(); // Expanded rows that show the node table instead of the graph, "kind:project:name"
   const left = h("div", { class: "pane project-pick" });
   const right = h("div", { class: "pane project-detail" });
   const note = h("span", { class: "updated muted" });
@@ -1209,7 +1209,7 @@ function renderBrowse(params, ctx) {
       registry.data ? [registry.data.pipelines[base], registry.data.systems[base]] : registry.error?.message || null,
       (runs.data?.runs || []).filter((run) => run.project === selected),
       [...open],
-      [...views].map(([key, value]) => [key, value.pending ? "pending" : value.error ? value.error.message : value.result]),
+      [...tables],
     ]);
     redraw(right, signature, () => buildRight(record, base));
   }
@@ -1243,11 +1243,12 @@ function renderBrowse(params, ctx) {
       ])];
     }
     return [head,
-      h("h3", null, "Pipelines"), targetTable("pipeline", pipelines, record.name),
-      h("h3", null, "Systems"), targetTable("system", systems, record.name)];
+      h("h3", null, "Pipelines"), targetTable("pipeline", pipelines, record.name, pipelines),
+      h("h3", null, "Systems"), targetTable("system", systems, record.name, pipelines)];
   }
 
-  function targetTable(kind, entries, project) {
+  /** pipelines: the project's pipelines in the registry, whose nodes a system's details draw */
+  function targetTable(kind, entries, project, pipelines) {
     if (!entries.length) return h("p", { class: "muted" }, `No ${kind}s.`);
     const all = runs.data?.runs || [];
     const rows = [];
@@ -1273,14 +1274,15 @@ function renderBrowse(params, ctx) {
           ]),
         ],
       });
-      if (isOpen) rows.push({ key: key + ":detail", class: "detail", cells: [details(kind, entry, project)] });
+      if (isOpen) rows.push({ key: key + ":detail", class: "detail", cells: [details(kind, entry, project, pipelines)] });
     }
     const built = table(["", kind === "pipeline" ? "Pipeline" : "System", kind === "pipeline" ? "Nodes" : "Pipelines, in order", "Latest run per station", ""], rows, { className: "targets" });
     for (const cell of built.querySelectorAll("tr.detail > td")) cell.setAttribute("colspan", "5");
     return built;
   }
 
-  function details(kind, entry, project) {
+  /** A pipeline's or system's details: its facts, then its nodes as a graph, or as a table, from Plumber's registry */
+  function details(kind, entry, project, pipelines) {
     const key = `${kind}:${project}:${entry.name}`;
     const facts = kind === "pipeline"
       ? [`Nodes: ${(entry.nodes || []).join(" → ") || "none"}`, `max_workers ${entry.max_workers ?? "all cores"}`, `multiprocessing ${entry.multiprocessing ? "yes" : "no"}`, `error tolerant ${entry.error_tolerant ? "yes" : "no"}`]
@@ -1289,53 +1291,34 @@ function renderBrowse(params, ctx) {
       entry.description ? h("p", { class: "description" }, entry.description) : null,
       h("p", { class: "muted small" }, facts.join(" · ")),
     ]);
-    const loaded = views.get(key);
-    if (!loaded) {
-      box.append(focusKey(button("Load inputs and outputs from stations", async () => {
-        // Pending in views, so a redraw while stations load the project shows this line, not the button again
-        views.set(key, { pending: loading(`Asking every station to load ${project} with Canonada…`) });
-        drawRight();
-        try {
-          views.set(key, { result: await api("GET", seg`/view/${kind}/${project}/${entry.name}`) });
-        } catch (error) {
-          views.set(key, { error });
-        }
-        drawRight();
-      }, "quiet small"), `view:${key}`));
-    } else if (loaded.pending) {
-      box.append(loaded.pending);
-    } else if (loaded.error) {
-      box.append(errorBox(loaded.error));
-    } else {
-      box.append(makeup(kind, loaded.result, project, entry.name));
+    // A system draws each of its pipelines, in the order it runs them
+    const parts = kind === "pipeline" ? [{ name: entry.name, nodes: entry.makeup }]
+      : (entry.pipelines || []).map((name) => ({ name, nodes: (pipelines || []).find((item) => item.name === name)?.makeup }));
+    if (!parts.length) return box;
+    if (parts.some((part) => !Array.isArray(part.nodes))) {
+      box.append(h("p", { class: "muted small" }, "Plumber's registry has no inputs and outputs for this: Plumber is older than plumber-gui. Update Plumber, then Reload."));
+      return box;
     }
+    const asTable = tables.has(key);
+    const toggle = segmented([{ value: "graph", label: "Graph" }, { value: "table", label: "Table" }], asTable ? "table" : "graph", (value) => {
+      if (value === "table") tables.add(key);
+      else tables.delete(key);
+      drawRight();
+    }, "Show the nodes as");
+    for (const option of toggle.children) option.setAttribute("data-focus", `show:${key}:${option.getAttribute("data-value")}`);
+    box.append(toggle, ...parts.map((part) => h("div", { class: "makeup" }, [
+      kind === "system" ? h("h4", null, part.name) : null,
+      asTable ? nodeTable(part.nodes) : pipelineGraph(part.nodes, part.name),
+    ])));
     return box;
   }
 }
 
-/** Inputs and outputs per station; identical answers are shown once. */
-function makeup(kind, result, project, name) {
-  const groups = new Map();
-  const problems = [];
-  for (const entry of result) {
-    if (entry.error) {
-      const notSent = entry.error === `Project '${project}' not found`;
-      problems.push(h("li", null, notSent ? `${entry.station}: doesn't have ${project} yet; it is sent the first time it starts there or at the next push.`
-        : /not found/.test(entry.error) ? `${entry.station}: its copy has no ${kind} ${name}; it is older than Plumber's.` : `${entry.station}: ${entry.error}`));
-      continue;
-    }
-    const signature = JSON.stringify(entry.view);
-    if (!groups.has(signature)) groups.set(signature, { view: entry.view, stations: [] });
-    groups.get(signature).stations.push(entry.station);
-  }
-  const nodeTable = (nodes) => table(["Node", "Inputs", "Outputs", "Description"], (nodes || []).map((item) => [
+/** A pipeline's nodes with their inputs, outputs and description */
+function nodeTable(nodes) {
+  return table(["Node", "Inputs", "Outputs", "Description"], nodes.map((item) => [
     h("strong", null, item.name), h("span", { class: "mono" }, (item.input || []).join(", ")), h("span", { class: "mono" }, (item.output || []).join(", ")), item.description || "",
   ]), { className: "nodes" });
-  const blocks = [...groups.values()].map(({ view, stations: names }) => h("div", { class: "makeup" }, [
-    h("p", { class: "muted small" }, `${groups.size > 1 ? "On" : "Same on"} ${names.join(", ")}:`),
-    kind === "pipeline" ? nodeTable(view.nodes) : (view.pipelines || []).map((pipe) => [h("h4", null, pipe.name), nodeTable(pipe.nodes)]),
-  ]));
-  return h("div", null, [...blocks, problems.length ? h("ul", { class: "plain muted small" }, problems) : null]);
 }
 
 // Pipelines: Schedules ---------------------------------------------------------

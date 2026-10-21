@@ -449,6 +449,24 @@ body:has(.runs-page) > main { flex: 1; min-height: 0; display: flex; flex-direct
 .station-error { padding: var(--s2) var(--s3); margin: 0; font-size: var(--fs-sm); color: var(--err); }
 .panel-body .station-error { padding: var(--s2) 0 0; } /* Under "What each station has", in line with its table */
 
+/* Pipeline graphs (graph.js): boxes measured in .graph-measure, then placed in the SVG */
+.graph { position: relative; overflow: auto; padding: var(--s2); background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); font-size: var(--fs-sm); line-height: 1.35; }
+.graph-measure { position: absolute; left: 0; top: 0; visibility: hidden; }
+.graph-svg { display: block; overflow: visible; }
+.graph-edge { fill: none; stroke: var(--muted); stroke-width: 1.3; }
+.graph-arrow { fill: var(--muted); }
+.graph-node { width: max-content; max-width: 320px; padding: var(--s2) var(--s3); background: var(--accent-soft); border: 1px solid var(--border-strong); border-radius: 4px; color: var(--text); text-align: center; }
+.graph-node-name { display: block; }
+.graph-node-description { display: block; color: var(--muted); }
+.graph-io { display: flex; justify-content: space-between; gap: var(--s4); margin-top: var(--s1); text-align: left; }
+.graph-io-list:last-child { text-align: right; }
+.graph-io-list > div { font-family: var(--mono); font-size: 11.5px; overflow-wrap: anywhere; }
+.graph-data { width: max-content; max-width: 240px; padding: var(--s2) var(--s4); border: 1px solid; border-radius: 50%; font-family: var(--mono); font-size: 11.5px; text-align: center; overflow-wrap: anywhere; }
+.graph-data.source { background: var(--warn-bg); border-color: var(--warn); color: var(--text); }
+.graph-data.sink { background: var(--ok-bg); border-color: var(--ok); color: var(--text); }
+.graph-label { width: max-content; max-width: 200px; padding: 0 var(--s1); background: var(--surface); color: var(--muted); font-family: var(--mono); font-size: 11px; text-align: center; overflow-wrap: anywhere; }
+.target-detail > .segmented { align-self: flex-start; } /* Not stretched across the column */
+
 /* Environments */
 .env-matrix th .check { font-weight: 600; }
 .env-cell { display: inline-flex; padding: 0; border: 0; background: none; font: inherit; color: inherit; cursor: pointer; border-radius: 999px; }
