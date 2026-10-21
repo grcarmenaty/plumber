@@ -76,9 +76,10 @@
 
 *, *::before, *::after { box-sizing: border-box; }
 
-html, body { height: 100%; }
+html { height: 100%; }
 
 body {
+  min-height: 100%; /* Not height: the body must grow with the page, or the sticky header leaves with it after one screen */
   margin: 0;
   background: var(--bg);
   color: var(--text);
